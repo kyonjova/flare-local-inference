@@ -126,6 +126,7 @@ struct HttpState {
     thinking_token_budget: Option<u32>,
     context_hint: String,
     capacity_hint: String,
+    response_model: String,
     started: Instant,
     generated: Mutex<VecDeque<(Instant, u64)>>,
     accepting: Mutex<bool>,
@@ -280,6 +281,11 @@ impl Server {
             thinking_token_budget: config.thinking_token_budget,
             context_hint: config.context_hint.clone(),
             capacity_hint: config.capacity_hint.clone(),
+            response_model: config
+                .served_names
+                .first()
+                .cloned()
+                .unwrap_or_else(|| model.config().model_id.clone()),
             started: Instant::now(),
             generated: Mutex::new(VecDeque::new()),
             accepting: Mutex::new(true),
