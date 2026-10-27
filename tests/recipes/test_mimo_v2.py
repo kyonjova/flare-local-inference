@@ -79,3 +79,29 @@ def test_checkpoint_chunk_geometry_rejects_inexact_sharding():
         config().qkv_chunks(0, TensorParallelShard(0, 3))
     with pytest.raises(ValueError, match="checkpoint's fused-QKV shard count"):
         config().qkv_chunks(0, TensorParallelShard(0, 16))
+
+
+def flash_config():
+    """MiMo V2.6 Flash: fewer full-attention KV heads than sliding ones, four fused-QKV training shards."""
+    c = config().text | {"hidden_size": 4096, "num_attention_heads": 64, "num_key_value_heads": 4,
+                         "swa_num_attention_heads": 64, "swa_num_key_value_heads": 8}
+    return ModelConfig.from_dict(c, checkpoint_ranks=4)
+
+
+@pytest.mark.parametrize("world", [1, 2, 4])
+def test_flash_attention_geometry_partitions_each_layer_type(world):
+    c = flash_config()
+    shard = TensorParallelShard(0, world)
+    assert c.attention(0).local(shard) == (64 // world, 4 // world)
+    assert c.attention(1).local(shard) == (64 // world, 8 // world)
+    full, = c.qkv_chunks(0, TensorParallelShard(0, 4))
+    window, = c.qkv_chunks(1, TensorParallelShard(0, 4))
+    # One training shard: 16 query heads and one full or two sliding KV heads.
+    assert (full.query_rows, full.key_rows, full.value_rows, full.padded_rows) == (3072, 192, 128, 3456)
+    assert (window.query_rows, window.key_rows, window.value_rows, window.padded_rows) == (3072, 384, 256, 3712)
+    assert len(c.qkv_chunks(0, shard)) == 4 // world
+
+
+def test_flash_rejects_ranks_beyond_its_checkpoint_shards():
+    with pytest.raises(ValueError, match="checkpoint's fused-QKV shard count"):
+        flash_config().qkv_chunks(0, TensorParallelShard(0, 8))

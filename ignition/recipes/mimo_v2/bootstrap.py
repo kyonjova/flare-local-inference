@@ -37,6 +37,7 @@ from ignition.preparation.collectives import (
     create_all_gather_runtime,
     create_all_reduce_runtime,
     create_dma_all_reduce_runtime,
+    create_roce_runtime,
 )
 from ignition.preparation.disposable import storage_ranges
 from ignition.preparation.execution import GraphSignature
@@ -54,7 +55,7 @@ from .decoder import PreparedDecoder, Scratch
 from .dflash import SpeculativePreparation
 from .model import DecoderEnvironment
 from .pool import PAGE_TOKENS, ContinuationPool, continuation_layout, page_bytes
-from .vision import FEATURES, HIDDEN, PATCH_CAPACITIES, PreparedVision, VisionInputs, VisionScratch
+from .vision import FEATURES, PATCH_CAPACITIES, PreparedVision, VisionInputs, VisionScratch
 from .vision_state import PreparedVisionGeneration
 from ignition.components.vision_state import PrefillVisionInputs, VisionState
 from .weights import ModelWeights
@@ -70,6 +71,10 @@ class PreparationConfig:
     autotune_effort: str = "default"
     tuning_replica: TuningReplica | None = None
     devices: tuple[int, ...] = tuple(range(8))
+    # Device ordinals are host-local when each rank runs on its own Spark.
+    hosts: tuple[str, ...] | None = None
+    roce_ring: bool = False
+    roce_chain: bool = False
     context: int = 1048576
     prefill_chunk_size: int = 4096
     max_active: int = 4
@@ -88,12 +93,17 @@ class PreparationConfig:
         from ignition.components.capacity import image_capacity
 
         object.__setattr__(self, "image_concurrency", image_capacity(self.max_active, self.image_concurrency))
-        if (
-            len(self.devices) not in (2, 4, 8)
-            or len(set(self.devices)) != len(self.devices)
-            or any(d < 0 for d in self.devices)
-        ):
-            raise ValueError("MiMo preparation requires distinct GPUs dividing its eight QKV checkpoint shards")
+        placements = tuple(zip(self.hosts or ("",) * len(self.devices), self.devices))
+        if (not isinstance(self.devices, tuple) or len(self.devices) not in (2, 4, 8)
+                or len(set(placements)) != len(self.devices)
+                or self.hosts is not None and (not isinstance(self.hosts, tuple) or len(self.hosts) != len(self.devices))
+                or any(type(d) is not int or d < 0 for d in self.devices)):
+            raise ValueError("MiMo preparation requires two, four or eight distinct GPUs")
+        from ignition.planning import host_shape_error
+
+        error = host_shape_error(self.roce_ring, self.roce_chain, None if self.hosts is None else len(self.hosts))
+        if error:
+            raise ValueError(error)
         if not PAGE_TOKENS <= self.context <= 1048576 or self.context % PAGE_TOKENS:
             raise ValueError("MiMo context must be 128-aligned in [128,1048576]")
         if not 64 <= self.prefill_chunk_size <= self.context or self.prefill_chunk_size % 64:
@@ -143,6 +153,44 @@ class PreparationConfig:
         return max(self.speculative_widths) - 1 if self.dflash else 0
 
 
+def chat_template_path(hidden_size: int):
+    """Each MiMo V2.6 checkpoint publishes its own template bytes; the annotations are shared."""
+    filenames = {4096: "chat_template.flash.jinja", 6144: "chat_template.jinja"}
+    if hidden_size not in filenames:
+        raise ValueError(f"unsupported MiMo chat template hidden size: {hidden_size}")
+    return Path(__file__).with_name("assets") / filenames[hidden_size]
+
+
+def _collective_runtimes(config, group, device, *, hidden, draft_block, coordinator, package_storage):
+    """Allocate target, vocabulary, DFlash context, and vision channels; one RoCE channel on separate hosts."""
+    slots = config.request_capacity
+    draft_rows = slots * draft_block
+    tokens = max(config.prefill_chunk_size, config.decode_tokens, draft_rows)
+    vocabulary_rows = max(config.decode_samples, draft_rows)
+    vision_tokens = PATCH_CAPACITIES[-1] // 4
+    if coordinator.spans_hosts:
+        world = len(config.devices)
+        # Vision blocks reduce 1280-wide patch rows; the merger reduces hidden-width features.
+        vision_rows = max(vision_tokens, -(-PATCH_CAPACITIES[-1] * 1280 // hidden))
+        # Rank contributions: BF16 vocabulary partitions and DFlash context columns.
+        gather_bytes = max(vocabulary_rows * (152576 // world) * 2,
+                           tokens * (hidden // world) * 2 if config.dflash else 0)
+        runtime = create_roce_runtime(group, device, max_tokens=max(slots, config.decode_tokens, vocabulary_rows),
+            pipe_tokens=max(tokens, vision_rows), hidden_size=hidden, gather_bytes=gather_bytes,
+            ring=config.roce_ring, ring_open=config.roce_chain, package_storage=package_storage)
+        return runtime, runtime, runtime, runtime if config.dflash else None, runtime
+    ipc = package_storage.peer_storage
+    collective = create_all_reduce_runtime(group, device, max_tokens=tokens, hidden_size=hidden, ipc=ipc)
+    prefill = create_dma_all_reduce_runtime(
+        group, device, max_tokens=config.prefill_chunk_size, hidden_size=hidden, ipc=ipc
+    )
+    vocabulary = create_all_gather_runtime(group, device, max_rows=vocabulary_rows, columns=152576, ipc=ipc)
+    context = (create_all_gather_runtime(group, device,
+        max_rows=tokens, columns=hidden, ipc=ipc) if config.dflash else None)
+    vision = create_dma_all_reduce_runtime(group, device, max_tokens=vision_tokens, hidden_size=hidden, ipc=ipc)
+    return collective, prefill, vocabulary, context, vision
+
+
 @torch.no_grad()
 @with_autotune_effort
 def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storage=None):
@@ -157,6 +205,10 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
     transient = contextlib.ExitStack()
     transient.enter_context(package_storage.transient())
     weights = ModelWeights.load(manifest, device, shard=shard, progress=progress, dflash=config.dflash)
+    if torch.cuda.get_device_properties(device).is_integrated:
+        from ignition.preparation.host_memory import release_page_cache
+
+        release_page_cache(manifest.shard_paths)
     release_unused()
     sequence = torch.zeros(1, dtype=torch.int64, device=device)
     with phase(progress, "Allocate model state and collectives"):
@@ -188,20 +240,10 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
         frame = torch.zeros(1, dtype=torch.int32, device=device)
         completion = CompletionOutputs.allocate((2, slots, 24), device=device)
         coordinator = CollectivePreparation(group)
-        ipc = package_storage.peer_storage
-        draft_rows = slots * weights.config.draft.block_size if config.dflash else 0
-        tokens = max(config.prefill_chunk_size, config.decode_tokens, draft_rows)
-        collective = create_all_reduce_runtime(group, device, max_tokens=tokens, hidden_size=6144, ipc=ipc)
-        prefill_collective = create_dma_all_reduce_runtime(
-            group, device, max_tokens=config.prefill_chunk_size, hidden_size=6144, ipc=ipc
-        )
-        vocabulary_collective = create_all_gather_runtime(
-            group, device, max_rows=max(config.decode_samples, draft_rows), columns=152576, ipc=ipc
-        )
-        context_collective = (create_all_gather_runtime(group, device,
-            max_rows=tokens, columns=6144, ipc=ipc) if config.dflash else None)
-        vision_collective = create_dma_all_reduce_runtime(group, device,
-            max_tokens=PATCH_CAPACITIES[-1] // 4, hidden_size=6144, ipc=ipc)
+        collective, prefill_collective, vocabulary_collective, context_collective, vision_collective = (
+            _collective_runtimes(config, group, device, hidden=weights.config.text["hidden_size"],
+                                 draft_block=weights.config.draft.block_size if config.dflash else 0,
+                                 coordinator=coordinator, package_storage=package_storage))
         identity = hashlib.sha256(
             json.dumps(
                 {
@@ -239,7 +281,7 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
         vision_inputs = VisionInputs.allocate(device)
         vision_prefill = PrefillVisionInputs.allocate(config.prefill_chunk_size, device)
         vision_state = VisionState(inputs, vision_prefill, requests, image_slots=config.image_concurrency, image_token=weights.config.text["image_token_id"],
-                                   features=FEATURES, hidden=HIDDEN)
+                                   features=FEATURES, hidden=weights.config.text["hidden_size"])
         vision_storage = {}
         environment = DecoderEnvironment.load(snapshot, vision_state)
         buffers = dict(
@@ -371,7 +413,8 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
         for capacity in reversed(PATCH_CAPACITIES):
             name = f"vision{capacity}"
             cursor = graph_buffers.cursor()
-            vision_storage[capacity] = VisionScratch.allocate(capacity, shard, device, buffers=cursor)
+            vision_storage[capacity] = VisionScratch.allocate(capacity, shard, device, hidden=weights.config.text["hidden_size"],
+                                                            buffers=cursor)
             encoder = PreparedVision(
                 weights.vision,
                 vision_storage[capacity],
@@ -493,8 +536,7 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
         )
     }
     assets["chat_template"] = annotated_template_asset(
-        (snapshot / "chat_template.jinja").read_bytes(),
-        Path(__file__).with_name("assets") / "chat_template.jinja")
+        (snapshot / "chat_template.jinja").read_bytes(), chat_template_path(weights.config.text["hidden_size"]))
     cache_regions = [history_region(buffers, "cache." + name, tensor, contract_proto.PAGED_KEY_VALUE)
         for name, tensor in pool.pages.items()]
     buffers["request_pending_token"] = requests.pending_token
@@ -612,9 +654,9 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
             coordinator,
             speculation,
         ),
-        close_resources=tuple(
+        close_resources=tuple(dict.fromkeys(
             c
             for c in (scoring, context_collective, vision_collective, prefill_collective, vocabulary_collective, collective)
             if c is not None
-        ),
+        )),
     )

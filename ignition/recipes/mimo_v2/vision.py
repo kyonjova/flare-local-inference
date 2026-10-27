@@ -13,7 +13,6 @@ from ignition.components.varlen_attention import PreparedVarlenAttention
 
 PATCH_CAPACITIES = (256, 1024, 4096, 16384)
 FEATURES = 16384
-HIDDEN = 6144
 
 
 @dataclass(frozen=True)
@@ -60,7 +59,7 @@ class VisionScratch:
     output: torch.Tensor
 
     @classmethod
-    def allocate(cls, patches, shard, device, *, buffers=None):
+    def allocate(cls, patches, shard, device, *, hidden, buffers=None):
         heads, kv_heads = 32 // shard.world_size, 8 // shard.world_size
         def zeros(cursor, *shape):
             return (torch.zeros(shape, dtype=torch.bfloat16, device=device) if cursor is None
@@ -76,7 +75,7 @@ class VisionScratch:
         attended = zeros(attention, patches, heads * 64)
         merged = zeros(merger, patches // 4, 5120)
         activated = zeros(merger, patches // 4, 5120 // shard.world_size)
-        partial, output = (zeros(merger, patches // 4, HIDDEN) for _ in range(2))
+        partial, output = (zeros(merger, patches // 4, hidden) for _ in range(2))
         if buffers is not None:
             buffers.join(*stages)
         return cls(pixels, residual, normalized, qkv, query, key, value, attended, projected,
