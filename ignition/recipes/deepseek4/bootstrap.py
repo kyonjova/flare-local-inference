@@ -35,6 +35,7 @@ from ignition.preparation.collectives import (
     create_all_gather_runtime,
     create_all_reduce_runtime,
     create_dma_all_reduce_runtime,
+    create_roce_runtime,
 )
 from ignition.preparation.disposable import storage_ranges
 from ignition.preparation.execution import GraphSignature
@@ -67,6 +68,10 @@ class PreparationConfig:
     autotune_effort: str = "default"
     tuning_replica: TuningReplica | None = None
     devices: tuple[int, ...] = (0, 1, 2, 3)
+    # Device ordinals are host-local when each rank runs on its own Spark.
+    hosts: tuple[str, ...] | None = None
+    roce_ring: bool = False
+    roce_chain: bool = False
     context: int = 1048576
     prefill_chunk_size: int = 4096
     max_active: int = 4
@@ -97,12 +102,17 @@ class PreparationConfig:
         object.__setattr__(self, "image_concurrency", image_capacity(self.max_active, self.image_concurrency))
         if type(self.stream_overlap) is not bool:
             raise TypeError("stream_overlap must be a boolean")
-        if (
-            len(self.devices) not in (2, 4)
-            or len(set(self.devices)) != len(self.devices)
-            or any(d < 0 for d in self.devices)
-        ):
+        placements = tuple(zip(self.hosts or ("",) * len(self.devices), self.devices))
+        if (not isinstance(self.devices, tuple) or len(self.devices) not in (2, 4)
+                or len(set(placements)) != len(self.devices)
+                or self.hosts is not None and (not isinstance(self.hosts, tuple) or len(self.hosts) != len(self.devices))
+                or any(type(d) is not int or d < 0 for d in self.devices)):
             raise ValueError("DeepSeek V4 Flash Vision preparation requires two or four distinct GPUs")
+        from ignition.planning import host_shape_error
+
+        error = host_shape_error(self.roce_ring, self.roce_chain, None if self.hosts is None else len(self.hosts))
+        if error:
+            raise ValueError(error)
         if not PAGE_TOKENS <= self.context <= 1048576 or self.context % PAGE_TOKENS:
             raise ValueError("DeepSeek context must be 256-aligned in [256,1048576]")
         if not 512 <= self.prefill_chunk_size <= self.context or self.prefill_chunk_size % 64:
@@ -150,6 +160,35 @@ class PreparationConfig:
         return max(self.speculative_widths) - 1 if self.dspark else 0
 
 
+def _collective_runtimes(config, group, device, *, coordinator, package_storage):
+    """Share one RoCE channel across ordered graph collectives on separate hosts."""
+    slots = config.request_capacity
+    tokens = max(config.prefill_chunk_size, config.decode_tokens, slots * config.draft_tokens)
+    vocabulary_rows = max(config.decode_samples, slots * config.draft_tokens)
+    if coordinator.spans_hosts:
+        # Each rank contributes its BF16 vocabulary partition to sampling gathers and two
+        # partitions to the DSpark Markov gather.
+        world = len(config.devices)
+        gather_bytes = max(vocabulary_rows * (129280 // world) * 2,
+                           slots * (2 * 129280 // world) * 2 if config.dspark else 0)
+        runtime = create_roce_runtime(group, device, max_tokens=max(slots, config.decode_tokens, vocabulary_rows),
+            pipe_tokens=tokens, hidden_size=4096, gather_bytes=gather_bytes, ring=config.roce_ring,
+            ring_open=config.roce_chain, package_storage=package_storage)
+        return runtime, runtime, runtime, runtime if config.dspark else None
+    ipc = package_storage.peer_storage
+    collective = create_all_reduce_runtime(group, device, max_tokens=tokens, hidden_size=4096, ipc=ipc)
+    prefill = create_dma_all_reduce_runtime(
+        group, device, max_tokens=config.prefill_chunk_size, hidden_size=4096, ipc=ipc
+    )
+    vocabulary = create_all_gather_runtime(group, device, max_rows=vocabulary_rows, columns=129280, ipc=ipc)
+    markov = (
+        create_all_gather_runtime(group, device, max_rows=slots, columns=2 * 129280, ipc=ipc)
+        if config.dspark
+        else None
+    )
+    return collective, prefill, vocabulary, markov
+
+
 @torch.no_grad()
 @with_autotune_effort
 def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storage=None):
@@ -167,6 +206,10 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
     weights = ModelWeights.load(manifest, device, shard=shard, progress=progress, dspark=config.dspark,
                                 draft_head_quantization=config.draft_head_quantization,
                                 markov_head_quantization=config.markov_head_quantization)
+    if torch.cuda.get_device_properties(device).is_integrated:
+        from ignition.preparation.host_memory import release_page_cache
+
+        release_page_cache(manifest.shard_paths)
     release_unused()
     sequence = torch.zeros(1, dtype=torch.int64, device=device)
     with phase(progress, "Allocate model state and collectives"):
@@ -198,20 +241,8 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
         frame = torch.zeros(1, dtype=torch.int32, device=device)
         completion = CompletionOutputs.allocate((2, slots, 24), device=device)
         coordinator = CollectivePreparation(group)
-        ipc = package_storage.peer_storage
-        tokens = max(config.prefill_chunk_size, config.decode_tokens, slots * config.draft_tokens)
-        collective = create_all_reduce_runtime(group, device, max_tokens=tokens, hidden_size=4096, ipc=ipc)
-        prefill_collective = create_dma_all_reduce_runtime(
-            group, device, max_tokens=config.prefill_chunk_size, hidden_size=4096, ipc=ipc
-        )
-        vocabulary_collective = create_all_gather_runtime(
-            group, device, max_rows=max(config.decode_samples, slots * config.draft_tokens), columns=129280, ipc=ipc
-        )
-        markov_collective = (
-            create_all_gather_runtime(group, device, max_rows=slots, columns=2 * 129280, ipc=ipc)
-            if config.dspark
-            else None
-        )
+        collective, prefill_collective, vocabulary_collective, markov_collective = _collective_runtimes(
+            config, group, device, coordinator=coordinator, package_storage=package_storage)
         identity = hashlib.sha256(
             json.dumps(
                 {
@@ -619,9 +650,9 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
             coordinator,
             speculation,
         ),
-        close_resources=tuple(
+        close_resources=tuple(dict.fromkeys(
             c
             for c in (scoring, markov_collective, prefill_collective, vocabulary_collective, collective)
             if c is not None
-        ),
+        )),
     )

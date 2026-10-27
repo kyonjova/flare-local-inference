@@ -581,6 +581,18 @@ Use two or four available GPUs for preparation and serving:
   --gpus 0,1,2,3
 ```
 
+For two DGX Sparks with one GPU per host, export with
+`--gpus 0 --ranks 2 --rendezvous 10.200.0.12:29630` and start
+`ignition join 10.200.0.12:29630 --rank 1 --ranks 2` on the peer. Four Sparks
+use `--ranks 4` and join peer ranks 1 through 3. The prepared model uses one
+RoCEnante channel for its hidden reductions, vocabulary gathers, and DSpark
+Markov gathers. Serve the package with
+`flare orbit run maxwell:/data/flare-runtime/deepseek4-tp2.safetensors --cluster sparks --gpus 0`,
+listing hosts in preparation rank order. See
+[multi-host preparation and serving](multi-host.md) for preparation
+authentication, orbit setup, and rank placement. Two-Spark preparation and
+serving have not yet been qualified on hardware.
+
 V4 uses 256-token logical pages containing 64 C4 latent records with an FP8
 retrieval index, or two C128 latent records with dense history attention. Each latent page
 stores FP8/BF16 payloads followed by its own scale footer. Continuation rows
