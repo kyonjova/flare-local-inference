@@ -136,3 +136,14 @@
     tests/server/test_nemotron.py::test_image_cache_identity: native serving of
     NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB reports 281 cached tokens for a repeated
     287-token prompt; image answers and token identity assertions pass.
+
+[ ] Prepare MiMo V2.6 Flash RL (XiaomiMiMo/MiMo-V2.6-Flash-RL@dcd3fd83) at TP2
+    across two Sparks. Its full-attention layers have 4 KV heads and its sliding
+    layers 8, while mimo_v2's shared AttentionScratch requires one head geometry
+    (attention.py). Sizing that shared scratch and its per-layer views for mixed
+    KV heads changes scratch aliasing in an optimized path and needs a human
+    contributor (design-review.md principle 14). Hidden widths, host placement,
+    RoCE channels, and the Flash template asset are in place. Then declare the
+    checkpoint with its own TP2/TP4 costs (it cannot run TP8: four QKV training
+    shards), check GQA group 8 sliding attention against modeling_mimo_v2.py,
+    and measure memory on GB10.
