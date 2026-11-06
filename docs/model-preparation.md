@@ -899,13 +899,21 @@ checkpoint. Two-Spark exports measured 88,522 MiB of package fixed mappings
 per rank at eight concurrent requests with 4096-token chunks and 91,082 MiB at
 sixteen with 8192-token chunks; the declared 16 GiB expansion covers both.
 Serving the sixteen-request package loads 93.9 GiB per GPU and, at the default
-4 GiB reserve, allocates 9.9 GiB of KV, about 1.8 million tokens. Through
-`flare orbit run`, llm_inference_bench measured prefill at 2,439, 2,623, 2,368,
-and 1,842 tokens per second for 8K, 32K, 64K, and 128K prompts, and aggregate
-decode without context at 31, 57, 80, 129, and 172 tokens per second for one,
-two, four, eight, and sixteen requests; at 32K context the decode figures were
-31, 45, 65, 87, and 123. DFlash acceptance has not been measured, and image
-requests have not been qualified on GB10.
+4 GiB reserve, allocates 9.9 GiB of KV, 1,843,200 tokens. Through
+`flare orbit run`, llm-inference-bench 0.8.0 measured 30-second sustained cells
+at temperature 1.0 on filler prompts with EOS ignored. Prefill ran at 2,453,
+2,533, 2,406, and 1,885 tokens per second for 8K, 32K, 64K, and 128K prompts.
+Aggregate decode for one, two, four, eight, and sixteen requests was 31, 55,
+75, 102, and 177 tokens per second without context; 33, 45, 64, 84, and 128 at
+8K; 30, 44, 68, 87, and 125 at 32K; and 29, 43, 61, 88, and 120 at 64K. The
+serving metrics show adaptive DFlash drafting mostly disengaged on that text:
+three of the four single-request cells ran fewer than ten draft rounds
+against about 900 verification graphs, and rounds that did draft accepted
+2.3 to 3.3 tokens.
+The sixteen-request cell without context, where drafting stayed engaged, is
+the one cell above 130 tokens per second. A single coding prompt generated
+at 31 to 46 tokens per second across three runs. Image requests have not been
+qualified on GB10.
 
 ## Step-5 Preview
 
