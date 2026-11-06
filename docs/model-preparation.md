@@ -854,14 +854,18 @@ The 173 GB checkpoint exceeds one DGX Spark's memory, so Spark serving runs
 tensor-parallel across two hosts, one rank per host, reducing through RoCEnante
 over their ConnectX-7 ports. Multi-host export requires the checkpoint, including
 its `dflash/` directory, in rank zero's hub cache at the declared revision; it
-does not download. The example prepares eight concurrent requests on two
-Sparks, following the [multi-host guide](multi-host.md) for preparation
-authentication and rank placement. On rank zero, whose preparation address is
-`10.200.0.12`:
+does not download. The example prepares sixteen concurrent requests with
+8192-token prefill chunks on two Sparks, following the
+[multi-host guide](multi-host.md) for preparation authentication and rank
+placement. `--lock-gpu-clocks` needs root or passwordless `sudo` for
+`nvidia-smi` on both hosts; omit it otherwise. On rank zero, whose preparation
+address is `10.200.0.12`:
 
 ```sh
 .venv/bin/ignition export mimo-v2.6-flash-rl --ranks 2 \
-  --rendezvous 10.200.0.12:29630 --gpus 0 --max-concurrency 8
+  --rendezvous 10.200.0.12:29630 --gpus 0 --max-concurrency 16 \
+  --prefill-chunk-size 8192 --native-dense-activations \
+  --autotune-effort audit --lock-gpu-clocks
 .venv/bin/ignition convert CACHE_ENTRY --form packed --output /data/flare-runtime/mimo-v26-flash-rl-spark-tp2.safetensors
 ```
 
@@ -871,20 +875,37 @@ On the peer:
 .venv/bin/ignition join 10.200.0.12:29630 --rank 1 --ranks 2
 ```
 
-Serve the package from both hosts, or through `flare orbit run` with a two-node
-cluster:
+A `[models."mimo-v2.6-flash-rl"]` section with `max_concurrency = 16` in the
+[configuration file](cli-design.md#33-configuration-file) makes that capacity the
+host's default; the chunk size and tuning options are command-line flags.
+
+Serve the package through `flare orbit run` with a two-node cluster whose
+first node holds the package, or from both hosts directly:
 
 ```sh
+flare orbit run spark1:/data/flare-runtime/mimo-v26-flash-rl-spark-tp2.safetensors \
+  --cluster sparks --name mimo --host 0.0.0.0
+
 ./flare/target/release/flare run /data/flare-runtime/mimo-v26-flash-rl-spark-tp2.safetensors \
   --rank 0 --rendezvous maxwell:29800
 ./flare/target/release/flare run --rank 1 --rendezvous maxwell:29800
 ```
 
+Orbit sends the peer its rank's data once over the ConnectX-7 link, about
+88 GB, before loading starts.
+
 On one host with two or four GPUs, select them with `--gpus` as for the Pro
-checkpoint. A two-Spark export at eight concurrent requests completed with
-88,522 MiB of package fixed mappings per rank, which the declared 11 GiB
-expansion covers. Serving of the exported package, DFlash acceptance, and image
-parity have not been qualified on GB10.
+checkpoint. Two-Spark exports measured 88,522 MiB of package fixed mappings
+per rank at eight concurrent requests with 4096-token chunks and 91,082 MiB at
+sixteen with 8192-token chunks; the declared 16 GiB expansion covers both.
+Serving the sixteen-request package loads 93.9 GiB per GPU and, at the default
+4 GiB reserve, allocates 9.9 GiB of KV, about 1.8 million tokens. Through
+`flare orbit run`, llm_inference_bench measured prefill at 2,439, 2,623, 2,368,
+and 1,842 tokens per second for 8K, 32K, 64K, and 128K prompts, and aggregate
+decode without context at 31, 57, 80, 129, and 172 tokens per second for one,
+two, four, eight, and sixteen requests; at 32K context the decode figures were
+31, 45, 65, 87, and 123. DFlash acceptance has not been measured, and image
+requests have not been qualified on GB10.
 
 ## Step-5 Preview
 

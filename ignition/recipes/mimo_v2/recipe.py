@@ -59,13 +59,14 @@ RECIPE = Recipe(
         stored_bytes=566_027_990_784, device_bytes=568_511_624_448, draft_bytes=5_536_632_576,
         expansion_bytes=14 << 30),
         # Flash RL stores four fused-QKV checkpoint shards, so it prepares two or four ranks. Its
-        # expansion covers the 10.71 GiB a two-rank GB10 export measured as package fixed mappings
-        # beyond the loaded tensors (88,522 MiB per rank), with 300 MiB to spare.
+        # expansion covers the package fixed mappings two-rank GB10 exports measured beyond the
+        # loaded tensors: 10.71 GiB at eight concurrent requests with 4096-token chunks (88,522 MiB
+        # per rank) and 15.66 GiB at sixteen with 8192-token chunks (91,082 MiB per rank).
         Checkpoint(alias="mimo-v2.6-flash-rl", repository="XiaomiMiMo/MiMo-V2.6-Flash-RL",
         revision="f657ba2f7d24c9adc5730675baaa2d34de878a49", architecture="MiMoV2ForCausalLM",
         served_model_name="MiMo-V2.6-Flash-RL",
         stored_bytes=172_923_364_096, device_bytes=174_147_823_616, draft_bytes=2_936_114_304,
-        expansion_bytes=11 << 30,
+        expansion_bytes=16 << 30,
         # Plain dicts: multi-host preparation pickles the checkpoint for peer ranks.
         ranks={2: RankCosts(12_386_304, 737_280, 8 << 30), 4: RankCosts(6_291_456, 368_640, 8 << 30)},
         plain_ranks={2: RankCosts(7_274_496, 737_280, 8 << 30), 4: RankCosts(3_637_248, 368_640, 8 << 30)}),),
