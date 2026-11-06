@@ -881,9 +881,10 @@ cluster:
 ```
 
 On one host with two or four GPUs, select them with `--gpus` as for the Pro
-checkpoint. Two-Spark serving of this checkpoint has not been qualified: the
-expansion estimate in the recipe declaration, RoCE collective capacities, DFlash
-acceptance, and image parity await measurement on GB10.
+checkpoint. A two-Spark export at eight concurrent requests completed with
+88,522 MiB of package fixed mappings per rank, which the declared 11 GiB
+expansion covers. Serving of the exported package, DFlash acceptance, and image
+parity have not been qualified on GB10.
 
 ## Step-5 Preview
 
