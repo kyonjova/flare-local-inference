@@ -66,10 +66,9 @@ RECIPE = Recipe(
         served_model_name="MiMo-V2.6-Flash-RL",
         stored_bytes=172_923_364_096, device_bytes=174_147_823_616, draft_bytes=2_936_114_304,
         expansion_bytes=5 << 30,
-        ranks=MappingProxyType({2: RankCosts(12_386_304, 737_280, 8 << 30),
-                                4: RankCosts(6_291_456, 368_640, 8 << 30)}),
-        plain_ranks=MappingProxyType({2: RankCosts(7_274_496, 737_280, 8 << 30),
-                                      4: RankCosts(3_637_248, 368_640, 8 << 30)})),),
+        # Plain dicts: multi-host preparation pickles the checkpoint for peer ranks.
+        ranks={2: RankCosts(12_386_304, 737_280, 8 << 30), 4: RankCosts(6_291_456, 368_640, 8 << 30)},
+        plain_ranks={2: RankCosts(7_274_496, 737_280, 8 << 30), 4: RankCosts(3_637_248, 368_640, 8 << 30)}),),
     context=1048576, page_tokens=128, concurrency=32, max_concurrency=64, prefill_chunk=4096,
     speculation=Speculation(draft_tokens=7, token_capacity=128, packed_verification=True, graph_budget=64), max_draft_tokens=7, max_images=4, image_bytes=32 << 20,
     verification_rows=0,
