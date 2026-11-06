@@ -233,8 +233,8 @@ def prepare_rank(snapshot, config, *, rank, group, progress=None, package_storag
                 from ignition.components.collectives import packed_broadcast_layout
                 from ignition.components.speculation import SpeculativeAcceptance
 
-                layout = SpeculativeAcceptance.broadcast_layout(max(config.batch_capacities), max(config.speculative_widths))
-                gather_bytes = max(gather_bytes, (packed_broadcast_layout(layout.values())[1] + 15) // 16 * 16)
+                acceptance = SpeculativeAcceptance.broadcast_layout(max(config.batch_capacities), max(config.speculative_widths))
+                gather_bytes = max(gather_bytes, (packed_broadcast_layout(acceptance.values())[1] + 15) // 16 * 16)
             collective = create_roce_runtime(group, device, max_tokens=tokens, pipe_tokens=max(tokens, vision_tokens),
                 hidden_size=hidden, gather_bytes=gather_bytes, ring=config.roce_ring, ring_open=config.roce_chain,
                 package_storage=package_storage)
