@@ -835,6 +835,55 @@ token and seven proposals. Helios uses the shared speculative execution contract
 draft modeling and state updates are captured by Ignition. The vision encoder
 publishes compact image features for causal text prefill. Loading with
 `--mtp-draft-tokens 0` selects ordinary execution without draft-state updates.
+Image resize bounds and normalization come from the checkpoint's
+`preprocessor_config.json` and are packaged for the native frontend.
+
+## MiMo V2.6 Flash RL
+
+MiMo V2.6 Flash RL uses `XiaomiMiMo/MiMo-V2.6-Flash-RL` at revision
+`f657ba2f7d24c9adc5730675baaa2d34de878a49`, a 48-layer, 256-expert sibling of
+MiMo V2.6 Pro MOPD with the same checkpoint formats, chat template, tokenizer,
+and DFlash draft structure. Its global-attention layers store four KV heads and
+its sliding-window layers eight, and its fused-QKV projections are stored as four
+checkpoint shards, so the `mimo-v2.6-flash-rl` alias prepares two or four ranks.
+The alias prepares text, images, and seven DFlash draft tokens with adaptive
+verification; audio is not prepared. The API advertises the model as
+`MiMo-V2.6-Flash-RL`.
+
+The 173 GB checkpoint exceeds one DGX Spark's memory, so Spark serving runs
+tensor-parallel across two hosts, one rank per host, reducing through RoCEnante
+over their ConnectX-7 ports. Multi-host export requires the checkpoint, including
+its `dflash/` directory, in rank zero's hub cache at the declared revision; it
+does not download. The example prepares eight concurrent requests on two
+Sparks, following the [multi-host guide](multi-host.md) for preparation
+authentication and rank placement. On rank zero, whose preparation address is
+`10.200.0.12`:
+
+```sh
+.venv/bin/ignition export mimo-v2.6-flash-rl --ranks 2 \
+  --rendezvous 10.200.0.12:29630 --gpus 0 --max-concurrency 8
+.venv/bin/ignition convert CACHE_ENTRY --form packed --output /data/flare-runtime/mimo-v26-flash-rl-spark-tp2.safetensors
+```
+
+On the peer:
+
+```sh
+.venv/bin/ignition join 10.200.0.12:29630 --rank 1 --ranks 2
+```
+
+Serve the package from both hosts, or through `flare orbit run` with a two-node
+cluster:
+
+```sh
+./flare/target/release/flare run /data/flare-runtime/mimo-v26-flash-rl-spark-tp2.safetensors \
+  --rank 0 --rendezvous maxwell:29800
+./flare/target/release/flare run --rank 1 --rendezvous maxwell:29800
+```
+
+On one host with two or four GPUs, select them with `--gpus` as for the Pro
+checkpoint. Two-Spark serving of this checkpoint has not been qualified: the
+expansion estimate in the recipe declaration, RoCE collective capacities, DFlash
+acceptance, and image parity await measurement on GB10.
 
 ## Step-5 Preview
 
