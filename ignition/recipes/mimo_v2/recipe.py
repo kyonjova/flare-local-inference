@@ -58,10 +58,8 @@ RECIPE = Recipe(
         revision="adea8e2c5373181e5a973fa1ecb343cb31af214b", architecture="MiMoV2ForCausalLM",
         stored_bytes=566_027_990_784, device_bytes=568_511_624_448, draft_bytes=5_536_632_576,
         expansion_bytes=14 << 30),
-        # Flash RL stores four fused-QKV checkpoint shards, so it prepares two or four ranks. Its
-        # expansion covers the package fixed mappings two-rank GB10 exports measured beyond the
-        # loaded tensors: 10.71 GiB at eight concurrent requests with 4096-token chunks (88,522 MiB
-        # per rank) and 15.66 GiB at sixteen with 8192-token chunks (91,082 MiB per rank).
+        # Flash RL stores four fused-QKV checkpoint shards, so it prepares two or four ranks.
+        # Two-Spark TP2 exports map 91,082 MiB per rank at sixteen requests, 15.66 GiB above half the device bytes.
         Checkpoint(alias="mimo-v2.6-flash-rl", repository="XiaomiMiMo/MiMo-V2.6-Flash-RL",
         revision="f657ba2f7d24c9adc5730675baaa2d34de878a49", architecture="MiMoV2ForCausalLM",
         served_model_name="MiMo-V2.6-Flash-RL",
