@@ -82,9 +82,7 @@ RECIPE = Recipe(
             stored_bytes=160_372_641_076,
             device_bytes=160_360_333_756,
             draft_bytes=10_862_841_372,
-            # Serving a two-Spark TP2 package prepared for sixteen requests with
-            # 8192-token chunks allocates 85.3 GiB of model memory per rank, 10.6 GiB
-            # beyond half the device bytes; 22 GiB covers both ranks with margin.
+            # Two-Spark TP2 serving allocates 85.3 GiB per rank, 10.6 GiB above half the device bytes.
             expansion_bytes=22 << 30,
         ),
     ),
