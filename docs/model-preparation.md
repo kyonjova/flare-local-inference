@@ -824,9 +824,21 @@ On the peer:
 Four Sparks use `--ranks 4` and join peer ranks 1 through 3. Serve through
 `flare orbit run spark1:/data/flare-runtime/deepseek4-spark-tp2.safetensors --cluster sparks`,
 following the [multi-host guide](multi-host.md) for preparation authentication
-and rank placement. Planning places 74.7 GiB of weights and 11 GiB of graphs
-per rank at sixteen requests. Two-Spark preparation and serving have not been
-run on GB10.
+and rank placement. A two-Spark export at sixteen requests with 8192-token
+chunks, audit tuning effort, and locked clocks completed on GB10 and serves
+through `flare orbit run`: each rank allocates 85.3 GiB of model memory,
+loads 89.9 GiB in all, and at the default 4 GiB reserve allocates 14.4 GiB
+of KV, 3,541,760 tokens. The declared 22 GiB expansion covers that
+allocation. llm-inference-bench 0.8.0 measured 30-second sustained cells at
+temperature 1.0 on filler prompts with EOS ignored. Prefill ran at 2,274,
+2,377, 2,427, and 2,250 tokens per second for 8K, 32K, 64K, and 128K
+prompts. Aggregate decode for one, two, four, eight, and sixteen requests
+was 40, 57, 81, 120, and 177 tokens per second without context; 39, 51, 75,
+111, and 169 at 8K; 40, 61, 75, 114, and 168 at 32K; and 41, 59, 76, 111,
+and 167 at 64K. DSpark drafting stayed engaged in every single-request cell
+and accepted 1.8 to 2.3 tokens per round across the run. A single coding
+prompt generated at 45 to 51 tokens per second across three runs. Image
+requests and four-Spark TP4 have not been run on GB10.
 
 V4 uses 256-token logical pages containing 64 C4 latent records with an FP8
 retrieval index, or two C128 latent records with dense history attention. Each latent page
