@@ -234,6 +234,13 @@ def export_model(prepared, images, storage, path, *, options, progress=None, pub
         options=_cache_options(cache, options), sources=sources)
     package = RuntimePackage(allocations=allocations, modules={}, kernels=(), owners=(prepared, storage, images))
     package.source_path = Path(path)
+    if storage.integrated:
+        storage.seal_low_window()
+        console = getattr(progress, "console", None)
+        for address, (nbytes, memory) in images.allocations().items():
+            if memory == "device" and address < storage.EXTERNAL_FLOOR:
+                line = f"recorded device allocation {address:#x} of {nbytes >> 10} KiB lies below the restorable floor"
+                (print if console is None else console.print)(line)
     package._capture(request, package.owners, images.native)
     package.memory_inventory = collect_inventory(prepared, storage, package, external=package.external)
     if publisher is not None:
