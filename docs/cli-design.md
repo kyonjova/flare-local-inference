@@ -145,8 +145,9 @@ address toward its first peer; an explicit `--rendezvous` overrides it.
 Serving package distribution uses 1..64 streams per peer, selected by rank
 zero's `--transfer-streams` (default 8). Direct and switched fabrics route to
 the peer; `--roce-ring` uses intermediate ranks. `--roce-switch-only` limits
-RDMA rails and fabric transfers to subnets every rank holds, leaving direct
-cables between ranks unused; peers follow rank zero's choice. `--model-cache` selects the
+RDMA rails and fabric transfers to subnets every rank holds between devices that
+are not LLDP neighbors, leaving direct cables between ranks unused; peers follow
+rank zero's choice. `--model-cache` selects the
 receiving rank's prepared-model cache; `--package-cache` is the compatible
 fallback when `--model-cache` is absent. The default is `paths.package_cache`,
 otherwise `~/.cache/flare/packages`. Rank zero's
