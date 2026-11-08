@@ -3247,7 +3247,7 @@ pub mod tests {
                 rank_zero: vec![],
                 roce_ring: ring,
                 roce_chain: false,
-                transfer_fabric: Some(fabric::plan(&nodes, &records, ring, false).unwrap()),
+                transfer_fabric: Some(fabric::plan(&nodes, &records, ring, false, false).unwrap()),
                 single_host: false,
                 issued: now(),
                 expires: now() + 60,
@@ -3351,7 +3351,8 @@ pub mod tests {
             );
 
             // A dead next hop never falls back to the management address. Cache hits need no hop.
-            grant.transfer_fabric = Some(fabric::plan(&nodes, &records, ring, false).unwrap());
+            grant.transfer_fabric =
+                Some(fabric::plan(&nodes, &records, ring, false, false).unwrap());
             let closed = TcpListener::bind("127.0.0.1:0").unwrap();
             let port = closed.local_addr().unwrap().port();
             drop(closed);

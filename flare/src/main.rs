@@ -247,7 +247,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let options = args.load_options();
     let local_devices: Vec<i32> = (0..args.gpus.len() as i32).collect();
-    let shape = cluster::Shape::from_flags(args.roce_ring, args.roce_chain);
+    let routing = cluster::Routing {
+        shape: cluster::Shape::from_flags(args.roce_ring, args.roce_chain),
+        links: cluster::Links::from_switch_only(args.serving.roce_switch_only),
+    };
     let rendezvous = args.rendezvous;
     // SAFETY: The trusted package owners remain live until every rank drains.
     let owner = unsafe {
@@ -266,7 +269,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
     let cluster = match cluster {
         Some((cluster, cluster::Membership::Peer(stream), address)) => {
-            return serve_peer(owner, &cluster, stream, &address, progress, shape);
+            return serve_peer(owner, &cluster, stream, &address, progress, routing);
         }
         Some((cluster, cluster::Membership::Zero(streams), _)) => Some((cluster, streams)),
         None => None,
@@ -290,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     config["api_key"] = key.into();
     config["thinking_token_budget"] = serde_json::json!(configuration.thinking_token_budget());
     phase.finish(config["model_id"].as_str().unwrap_or_default());
-    serve(owner, config, progress, cluster, shape)?;
+    serve(owner, config, progress, cluster, routing)?;
     #[cfg(unix)]
     if let Some(peers) = launched {
         peers.finish().map_err(|e| e.to_string())?;
@@ -496,10 +499,10 @@ fn serve_peer(
     stream: flare_helios::execution::RankStream,
     address: &str,
     mut progress: StartupProgress,
-    shape: cluster::Shape,
+    routing: cluster::Routing,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut manifest = owner.manifests()?.remove(0);
-    let mut joined = cluster::peer(&owner, cluster, stream, &progress, shape)?;
+    let mut joined = cluster::peer(&owner, cluster, stream, &progress, routing)?;
     let records = joined.records.take();
     manifest.collectives = Some(cluster::health(&joined.transport));
     progress.finish_animation();
@@ -550,7 +553,7 @@ fn serve(
         flare_helios::runtime_package::ClusterRank,
         Vec<flare_helios::execution::RankStream>,
     )>,
-    shape: cluster::Shape,
+    routing: cluster::Routing,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // SAFETY: This executable loads a trusted package and retains its resources
     // until the native server confirms every replay stream has drained.
@@ -560,7 +563,7 @@ fn serve(
     let mut transport = None;
     let peers = match cluster {
         Some((_, streams)) => {
-            let joined = cluster::rank_zero(&owner, streams, &progress, shape)?;
+            let joined = cluster::rank_zero(&owner, streams, &progress, routing)?;
             manifest.collectives = Some(cluster::health(&joined.transport));
             transport = Some(joined.transport);
             Some(flare_helios::execution::RankPeers::Processes(
