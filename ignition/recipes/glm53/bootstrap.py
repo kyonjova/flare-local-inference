@@ -261,8 +261,11 @@ def prepare_rank(snapshot: Path, config: PreparationConfig, *, rank, group, prog
         free = torch.cuda.mem_get_info(device)[0]
         with open("/proc/self/statm") as statm:
             rss = int(statm.read().split()[1]) * os.sysconf("SC_PAGE_SIZE")
+        # Driver storage freed since the last report reopens addresses below the restorable floor.
+        sealed = 0 if package_storage is None else package_storage.seal_low_window()
         report(f"{stage}: free={free >> 20} MiB, allocated={torch.cuda.memory_allocated(device) >> 20} MiB, "
-               f"reserved={torch.cuda.memory_reserved(device) >> 20} MiB, rss={rss >> 20} MiB")
+               f"reserved={torch.cuda.memory_reserved(device) >> 20} MiB, rss={rss >> 20} MiB"
+               + (f", resealed {sealed >> 20} MiB below the floor" if sealed else ""))
 
     snapshot = Path(snapshot).resolve()
     shard = TensorParallelShard(rank, len(config.devices))

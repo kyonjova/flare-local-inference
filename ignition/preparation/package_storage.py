@@ -130,9 +130,11 @@ class PackageStorage:
 
         Storage occupied when the window was first reserved and freed later would otherwise let
         an external allocation land below the floor, where a serving context's own storage lies.
+        Returns the bytes this call newly reserved.
         """
         if not self.integrated or os.name == "nt":
-            return
+            return 0
+        before = sum(size for _, size in self.low_reservations)
         granule = self.granularity
         address = -(-self.LOW_SCAN_START // granule) * granule
         while address < self.EXTERNAL_FLOOR:
@@ -153,6 +155,7 @@ class PackageStorage:
                 size = max(granule, size // 2 // granule * granule)
             # A granule taken since the probe is skipped.
             address += size
+        return sum(size for _, size in self.low_reservations) - before
 
     def _snapshot(self):
         pointer = self.library.flare_package_snapshot()
