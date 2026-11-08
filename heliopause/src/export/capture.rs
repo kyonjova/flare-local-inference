@@ -2866,7 +2866,7 @@ pub(crate) fn capture_rank(
             &indices,
             &request.events,
         )?;
-        reach.graph(&nodes, &kernels)?;
+        reach.graph(index, &nodes, &kernels)?;
         let file = format!("graph-{index}.bin");
         let path = stage.path.join(&file);
         let mut writer = BufWriter::new(File::create(&path)?);
@@ -3040,8 +3040,9 @@ pub(crate) fn capture_rank(
                     && allocation.address < request.device_address_floor
                 {
                     return Err(invalid(format!(
-                        "retained device allocation {:?} at {:#x} is below the restorable address floor {:#x}",
-                        allocation.name, allocation.address, request.device_address_floor
+                        "retained device allocation {:?} at {:#x} ({} bytes, reached from {}) is below the restorable address floor {:#x}",
+                        allocation.name, allocation.address, allocation.nbytes,
+                        reach.origin(&allocation.name), request.device_address_floor
                     )));
                 }
                 let file = format!("storage-{}.bin", output.allocations.len());

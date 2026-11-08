@@ -48,6 +48,9 @@ pub(crate) struct Reachability {
     numeric: Vec<(u64, u64)>,
     inactive: Vec<(u64, u64)>,
     pub(crate) reached: HashSet<String>,
+    // How each reached allocation was first reached, for export diagnostics.
+    origins: HashMap<String, String>,
+    current: String,
     pending: VecDeque<String>,
     blobs: HashSet<(Vec<u8>, Vec<(usize, usize)>)>,
     tail: Option<(String, u64, Vec<u8>)>,
@@ -73,6 +76,8 @@ impl Reachability {
             numeric: merge_ranges(numeric.to_vec()),
             inactive: merge_ranges(inactive.to_vec()),
             reached: HashSet::new(),
+            origins: HashMap::new(),
+            current: "declared root".into(),
             pending: VecDeque::new(),
             blobs: HashSet::new(),
             tail: None,
@@ -89,9 +94,15 @@ impl Reachability {
             return Err(invalid(format!("unregistered graph allocation: {name}")));
         }
         if self.reached.insert(name.to_owned()) {
+            self.origins.insert(name.to_owned(), self.current.clone());
             self.pending.push_back(name.to_owned());
         }
         Ok(())
+    }
+
+    /// Where a reached allocation was first referenced from.
+    pub(crate) fn origin(&self, name: &str) -> &str {
+        self.origins.get(name).map_or("unreached", String::as_str)
     }
 
     pub(crate) fn pointer(&mut self, value: u64) -> ExportResult<()> {
@@ -140,9 +151,22 @@ impl Reachability {
         Ok(())
     }
 
-    pub(crate) fn graph(&mut self, nodes: &[wire::Node], kernels: &[Kernel]) -> ExportResult<()> {
+    pub(crate) fn graph(
+        &mut self,
+        graph: usize,
+        nodes: &[wire::Node],
+        kernels: &[Kernel],
+    ) -> ExportResult<()> {
         use wire::node::Operation;
-        for node in nodes {
+        for (index, node) in nodes.iter().enumerate() {
+            self.current = match node.operation.as_ref() {
+                Some(Operation::Kernel(node)) => {
+                    format!("graph {graph} node {index}, kernel function {}", node.function)
+                }
+                Some(Operation::Copy(_)) => format!("graph {graph} node {index}, copy"),
+                Some(Operation::Memset(_)) => format!("graph {graph} node {index}, memset"),
+                _ => format!("graph {graph} node {index}"),
+            };
             match node
                 .operation
                 .as_ref()
@@ -233,6 +257,7 @@ impl Reachability {
         data: &[u8],
         numeric: bool,
     ) -> ExportResult<()> {
+        self.current = format!("contents of {name} at {address:#x}");
         let mut boundary = [0u8; 14];
         let mut previous = 0;
         if let Some((previous_name, previous_end, tail)) = self.tail.take() {
@@ -315,6 +340,18 @@ mod tests {
             snapshot_spans: None,
             sizing: None,
         }
+    }
+    #[test]
+    fn origins_name_the_root_and_the_scanned_contents_that_reached_each_allocation() {
+        let allocations = [allocation("source", 0x1000), allocation("target", 0x2000)];
+        let mut reach =
+            Reachability::new(&allocations, &[], &[], &["source".into()]).unwrap();
+        reach
+            .contents(&allocations[0], 0x10, &0x2040u64.to_le_bytes())
+            .unwrap();
+        assert_eq!(reach.origin("source"), "declared root");
+        assert_eq!(reach.origin("target"), "contents of source at 0x1010");
+        assert_eq!(reach.origin("other"), "unreached");
     }
     #[test]
     fn unaligned_pointer_across_chunks_retains_target() {
@@ -512,6 +549,7 @@ mod tests {
         let mut reach = Reachability::new(&[scalar.clone(), input.clone()], &[], &[], &[]).unwrap();
         reach
             .graph(
+                0,
                 &[wire::Node {
                     operation: Some(wire::node::Operation::Kernel(node.clone())),
                 }],
@@ -522,6 +560,7 @@ mod tests {
         node.arguments[1].data = node.arguments[0].data.clone();
         reach
             .graph(
+                0,
                 &[wire::Node {
                     operation: Some(wire::node::Operation::Kernel(node)),
                 }],
