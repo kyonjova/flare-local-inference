@@ -20,7 +20,7 @@ use crate::runtime_package::RoceSpec;
 use crate::{ExecutionError, Failure, Result};
 
 /// The proxy ABI compiled into this runtime; packages record the one their kernels use.
-pub const PROXY_ABI: u32 = 10;
+pub const PROXY_ABI: u32 = 11;
 /// Control word 7 after a variable-length all-gather met a byte count it cannot send.
 const INVALID_VARLEN_COUNT: u32 = 1;
 
@@ -118,9 +118,10 @@ impl RoceTransport {
     /// before `connect` returns.
     pub unsafe fn open(spec: &RoceSpec, topology: &Topology) -> Result<Self> {
         let abi = unsafe { roce_abi_version() } as u32;
-        // ABI 9 and 10 have identical kernel-visible layouts and control operations.
-        // ABI 10's wider CPU ring window is allocated by this runtime at startup.
-        if !matches!(spec.proxy_abi, 9 | 10) || abi != PROXY_ABI {
+        // ABI 9, 10 and 11 share one kernel-visible region layout. ABI 10 widened the
+        // CPU ring window this runtime allocates at startup; ABI 11 added the
+        // reduce-scatter and shard-gather control kinds, which only ABI 11 packages post.
+        if !matches!(spec.proxy_abi, 9 | 10 | 11) || abi != PROXY_ABI {
             return Err(failure(format!(
                 "package RoCE kernels use proxy ABI {}, this runtime provides {abi}",
                 spec.proxy_abi
@@ -390,7 +391,7 @@ mod tests {
     #[test]
     fn compatible_package_abis_still_validate_the_captured_region() {
         let (region, spec, topology) = specification();
-        for abi in [8, 9, 10, 11] {
+        for abi in [8, 9, 10, 11, 12] {
             let mut spec = spec.clone();
             spec.proxy_abi = abi;
             spec.ctrl_offset += 128;
@@ -400,7 +401,7 @@ mod tests {
                 .expect("invalid layout must fail")
                 .to_string();
             assert!(
-                error.contains(if matches!(abi, 9 | 10) {
+                error.contains(if matches!(abi, 9 | 10 | 11) {
                     "region differs"
                 } else {
                     "proxy ABI"
