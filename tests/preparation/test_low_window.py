@@ -93,3 +93,17 @@ def test_windows_keeps_low_addresses_available_for_driver_allocations(monkeypatc
     space = AddressSpace([])
     storage(space).seal_low_window()
     assert space.calls == 0
+
+
+def test_export_lists_recorded_device_allocations_below_the_floor_in_address_order():
+    from ignition.preparation.runtime_package import low_floor_allocations
+
+    floor = PackageStorage.EXTERNAL_FLOOR
+    images = SimpleNamespace(allocations={
+        floor + (1 << 30): (2 << 20, "device"),
+        0x327c00000: (8 << 20, "device"),
+        0x100000000: (4096, "host"),
+        0x200000000: (1 << 20, "device"),
+    })
+    storage = SimpleNamespace(EXTERNAL_FLOOR=floor)
+    assert low_floor_allocations(images, storage) == [(0x200000000, 1 << 20), (0x327c00000, 8 << 20)]

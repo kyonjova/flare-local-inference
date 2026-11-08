@@ -165,6 +165,12 @@ def _publisher_metadata(publisher):
     return None if publisher is None else publisher.native_request
 
 
+def low_floor_allocations(images, storage):
+    """Recorded device allocations below the restorable floor, as (address, nbytes) in address order."""
+    return [(address, nbytes) for address, (nbytes, memory) in sorted(images.allocations.items())
+            if memory == "device" and address < storage.EXTERNAL_FLOOR]
+
+
 def export_model(prepared, images, storage, path, *, options, progress=None, publisher=None, bundle_only=False,
                  sources=False):
     """Hand captured handles and preparation metadata to the native exporter."""
@@ -237,10 +243,9 @@ def export_model(prepared, images, storage, path, *, options, progress=None, pub
     if storage.integrated:
         storage.seal_low_window()
         console = getattr(progress, "console", None)
-        for address, (nbytes, memory) in images.allocations().items():
-            if memory == "device" and address < storage.EXTERNAL_FLOOR:
-                line = f"recorded device allocation {address:#x} of {nbytes >> 10} KiB lies below the restorable floor"
-                (print if console is None else console.print)(line)
+        for address, nbytes in low_floor_allocations(images, storage):
+            line = f"recorded device allocation {address:#x} of {nbytes >> 10} KiB lies below the restorable floor"
+            (print if console is None else console.print)(line)
     package._capture(request, package.owners, images.native)
     package.memory_inventory = collect_inventory(prepared, storage, package, external=package.external)
     if publisher is not None:
