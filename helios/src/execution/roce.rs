@@ -120,8 +120,8 @@ impl RoceTransport {
     pub unsafe fn open(spec: &RoceSpec, topology: &Topology) -> Result<Self> {
         let abi = unsafe { roce_abi_version() } as u32;
         // ABI 9, 10 and 11 have identical kernel-visible layouts. ABI 10's wider CPU ring
-        // window is allocated by this runtime at startup; ABI 11 adds the reduce-scatter and
-        // shard-gather op kinds, which this proxy serves for cores that record any of them.
+        // window is allocated by this runtime at startup. ABI 11 adds the reduce-scatter and
+        // shard-gather op kinds, which cores recording ABI 9 or 10 never post.
         if !matches!(spec.proxy_abi, 9 | 10 | 11) || abi != PROXY_ABI {
             return Err(failure(format!(
                 "core RoCE kernels use proxy ABI {}, this runtime provides {abi}",

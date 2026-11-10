@@ -239,7 +239,7 @@ Ranks that disagree about ring mode fail during transport record exchange.
 
 Select ring mode explicitly during serving, including for a core prepared
 with the option. The serving flag chooses routing independently of the
-core's graph catalog. A core with proxy ABI 9, 10 or 11 can use either transport
+core's graph catalog. A core recording proxy ABI 9, 10 or 11 can use either transport
 without changing its captured addresses or collective algorithms. Preparation
 on a physical ring also needs `--roce-ring`, because non-neighbor direct routes
 are unavailable during warmup and capture. A chain (`--roce-chain`) uses the
