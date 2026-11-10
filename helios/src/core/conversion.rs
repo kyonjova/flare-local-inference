@@ -161,7 +161,7 @@ pub fn pack_with(
     selected: Option<&[usize]>,
     progress: &StartupProgress,
 ) -> Result<()> {
-    let phase = progress.phase("Verify package", None);
+    let phase = progress.phase("Verify core", None);
     let verified = Verified::open(source, selected)?;
     if !directory_form(source, &verified.metadata) {
         return Err(invalid("core is already in packed form"));
@@ -323,7 +323,7 @@ pub fn unpack_with(
     selected: Option<&[usize]>,
     progress: &StartupProgress,
 ) -> Result<()> {
-    let phase = progress.phase("Verify package", None);
+    let phase = progress.phase("Verify core", None);
     let verified = Verified::open(source, selected)?;
     if directory_form(source, &verified.metadata) {
         return Err(invalid("core is already in directory form"));
