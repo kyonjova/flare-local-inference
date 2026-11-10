@@ -43,7 +43,7 @@ def test_recipe_dispatches_the_complete_plan_to_the_rank_group(monkeypatch, remo
     calls, result, storage = [], object(), object()
     monkeypatch.setattr(rank_group, "prepare_group", lambda *args, **kwargs: calls.append((args, kwargs)) or result)
     assert recipe.prepare("checkpoint", plan, compile_forwards=True, kernel_cache=None, progress=None,
-                          package_storage=storage, ranks=ranks) is result
+                          core_storage=storage, ranks=ranks) is result
     (snapshot, config, forward), kwargs = calls[0]
     assert snapshot == "checkpoint" and forward is bootstrap.prepare_rank
     assert config.devices == ((0,) * world if remote else tuple(range(world)))
@@ -51,7 +51,7 @@ def test_recipe_dispatches_the_complete_plan_to_the_rank_group(monkeypatch, remo
     assert not config.roce_ring and not config.roce_chain
     assert config.max_active == 16 and config.dspark and config.draft_tokens == 5
     assert kwargs["ranks"] is ranks and kwargs["checkpoint"] is plan.checkpoint
-    assert kwargs["package_storage"] is storage
+    assert kwargs["core_storage"] is storage
 
 
 @pytest.mark.parametrize("world", [2, 4])
@@ -70,10 +70,10 @@ def test_remote_channels_cover_gathers_and_broadcasts_without_pcie(monkeypatch, 
     for name in ("create_all_reduce_runtime", "create_all_gather_runtime", "create_dma_all_reduce_runtime"):
         monkeypatch.setattr(bootstrap, name, lambda *args, **kwargs: pytest.fail("host ranks cannot use CUDA IPC"))
     channels = bootstrap._collective_runtimes(config, None, None,
-        coordinator=SimpleNamespace(spans_hosts=True), package_storage=storage)
+        coordinator=SimpleNamespace(spans_hosts=True), core_storage=storage)
     assert channels == (runtime, runtime, runtime, runtime if dspark else None)
     (call,) = calls
-    assert call["package_storage"] is storage and call["hidden_size"] == 4096
+    assert call["core_storage"] is storage and call["hidden_size"] == 4096
     slots = config.request_capacity
     assert call["pipe_tokens"] == max(config.prefill_chunk_size, config.decode_tokens, slots * config.draft_tokens)
     assert call["max_tokens"] >= config.decode_tokens
@@ -105,7 +105,7 @@ def test_local_channels_are_unchanged(monkeypatch):
                         lambda *args, **kwargs: pytest.fail("local ranks share CUDA IPC"))
     ipc = object()
     collective, prefill, vocabulary, markov = bootstrap._collective_runtimes(config, None, None,
-        coordinator=SimpleNamespace(spans_hosts=False), package_storage=SimpleNamespace(peer_storage=ipc))
+        coordinator=SimpleNamespace(spans_hosts=False), core_storage=SimpleNamespace(peer_storage=ipc))
     assert len({id(collective), id(prefill), id(vocabulary), id(markov)}) == 4
     assert reductions[0]["collective_tuning"] == "runtime" and reductions[0]["ipc"] is ipc
     assert gathers[0]["columns"] == 129280
