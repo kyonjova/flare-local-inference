@@ -11,6 +11,7 @@
 //! `--watch` keeps one session per node open through the dashboard's poller and prints a
 //! sample every second.
 
+use std::collections::BTreeMap;
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, mpsc};
@@ -28,19 +29,27 @@ use super::{Failure, frame};
 const PERIOD: Duration = Duration::from_secs(1);
 
 /// One sample: every node's latest result in cluster order. A node that has not answered yet
-/// is reported unreachable without an error.
-fn sample(cluster: &str, nodes: &[Node], latest: &[Option<Result<Value, String>>]) -> Value {
+/// is reported unreachable without an error. Each group carries the `model` that `models` holds
+/// for its name, or null.
+fn sample(
+    cluster: &str,
+    nodes: &[Node],
+    latest: &[Option<Result<Value, String>>],
+    models: &BTreeMap<String, String>,
+) -> Value {
     let rows: Vec<Value> = nodes
         .iter()
         .zip(latest)
         .map(|(node, result)| match result {
             Some(Ok(reply)) => {
-                let mut row = reply.clone();
-                if !row.is_object() {
-                    row = json!({});
+                let mut row = json!({"name": node.name, "reachable": true});
+                if let (Some(row), Some(fields)) = (row.as_object_mut(), reply.as_object()) {
+                    row.extend(fields.clone());
                 }
-                row["name"] = node.name.clone().into();
-                row["reachable"] = true.into();
+                for group in row["groups"].as_array_mut().into_iter().flatten() {
+                    let model = group["name"].as_str().and_then(|name| models.get(name));
+                    group["model"] = model.cloned().into();
+                }
                 row
             }
             Some(Err(error)) => json!({"name": node.name, "reachable": false, "error": error}),
@@ -62,6 +71,7 @@ fn print(sample: &Value) -> bool {
 /// or the process is interrupted.
 pub fn run(controller: &Controller, cluster: Option<&str>, watch: bool) -> Result<(), Failure> {
     let (cluster, nodes) = controller.cluster_nodes(cluster)?;
+    let models = controller.saved_models();
     if !watch {
         let latest: Vec<_> = thread::scope(|scope| {
             let handles: Vec<_> = nodes
@@ -83,7 +93,7 @@ pub fn run(controller: &Controller, cluster: Option<&str>, watch: bool) -> Resul
                 .map(|handle| handle.join().expect("metrics request panicked"))
                 .collect()
         });
-        print(&sample(&cluster, &nodes, &latest));
+        print(&sample(&cluster, &nodes, &latest, &models));
         return Ok(());
     }
     let (sender, receiver) = mpsc::channel::<Update>();
@@ -102,7 +112,7 @@ pub fn run(controller: &Controller, cluster: Option<&str>, watch: bool) -> Resul
                 Ok(update) => latest[update.node] = Some(update.result),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     next += PERIOD;
-                    if !print(&sample(&cluster, &nodes, &latest)) {
+                    if !print(&sample(&cluster, &nodes, &latest, &models)) {
                         break;
                     }
                 }
@@ -130,10 +140,15 @@ mod tests {
     #[test]
     fn a_sample_carries_each_nodes_reply_or_its_error() {
         let nodes = [node("a"), node("b"), node("c")];
-        let reply =
-            json!({"at": 7, "gpus": [], "groups": [{"name": "g", "metrics": {"active": 2}}]});
+        let reply = json!({"at": 7, "gpus": [], "groups": [
+            {"name": "g", "metrics": {"active": 2}}, {"name": "unsaved", "metrics": null}]});
         let latest = [Some(Ok(reply)), Some(Err("refused".to_owned())), None];
-        let sample = sample("sparks", &nodes, &latest);
+        let models = BTreeMap::from([("g".to_owned(), "GLM".to_owned())]);
+        let sample = sample("sparks", &nodes, &latest, &models);
+        let keys: Vec<&String> = sample["nodes"][0].as_object().unwrap().keys().collect();
+        assert_eq!(keys, ["name", "reachable", "at", "gpus", "groups"]);
+        assert_eq!(sample["nodes"][0]["groups"][0]["model"], "GLM");
+        assert_eq!(sample["nodes"][0]["groups"][1]["model"], Value::Null);
         assert_eq!(sample["cluster"], "sparks");
         assert!(sample["at"].as_u64().unwrap() > 0);
         assert_eq!(sample["nodes"][0]["name"], "a");
