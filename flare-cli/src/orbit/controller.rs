@@ -489,6 +489,15 @@ impl Controller {
         self.cluster(name)
     }
 
+    /// The alias each saved group's `--served-model-name` option gives, by group name.
+    pub fn saved_models(&self) -> BTreeMap<String, String> {
+        self.orbit
+            .group
+            .iter()
+            .filter_map(|spec| Some((spec.name.clone(), served_model_name(&spec.rank_zero)?)))
+            .collect()
+    }
+
     /// The orbit file's nodes of a cluster, in rank order.
     fn cluster(&self, name: Option<&str>) -> Result<(String, Vec<Node>), Failure> {
         let (name, nodes) = self.orbit.cluster(name)?;
@@ -514,7 +523,8 @@ impl Controller {
         let (name, nodes) = self.cluster(cluster)?;
         let results = parallel(&nodes, |_, node| self.query_status(node, None));
         if json {
-            return print_document(&status_document(&name, &nodes, &results));
+            let saved: Vec<&GroupSpec> = self.orbit.group.iter().collect();
+            return print_document(&status_document(&name, &nodes, &results, &saved));
         }
         let width = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0).max(4);
         println!("cluster {name}");
@@ -2536,9 +2546,10 @@ fn node_rows(
         .zip(statuses)
         .map(|(node, status)| match status {
             Ok(status) => {
-                let mut value = row(status);
-                value["name"] = node.name.clone().into();
-                value["reachable"] = true.into();
+                let mut value = json!({"name": node.name, "reachable": true});
+                if let (Some(value), Value::Object(fields)) = (value.as_object_mut(), row(status)) {
+                    value.extend(fields);
+                }
                 value
             }
             Err(error) => {
@@ -2548,16 +2559,49 @@ fn node_rows(
         .collect()
 }
 
-/// `flare orbit status --json`: every node with what STATUS reported about it.
+/// The alias of the saved definition named `name`, as JSON; null without one.
+fn saved_model(saved: &[&GroupSpec], name: &str) -> Value {
+    saved
+        .iter()
+        .find(|spec| spec.name == name)
+        .and_then(|spec| served_model_name(&spec.rank_zero))
+        .into()
+}
+
+/// A node's running and retained groups, each with the `model` of the saved definition of its
+/// name.
+fn group_rows(status: &NodeStatus, saved: &[&GroupSpec]) -> Vec<Value> {
+    status
+        .groups
+        .iter()
+        .map(|group| {
+            let mut value = serde_json::to_value(group).unwrap_or_else(|_| json!({}));
+            value["model"] = saved_model(saved, &group.name);
+            value
+        })
+        .collect()
+}
+
+/// `flare orbit status --json`: every node with its fingerprint, free cache space,
+/// controller-set revision, GPUs, groups and cache directories.
 fn status_document(
     cluster: &str,
     nodes: &[Node],
     statuses: &[Result<NodeStatus, Failure>],
+    saved: &[&GroupSpec],
 ) -> Value {
     json!({
         "cluster": cluster,
         "nodes": node_rows(nodes, statuses, |status| {
-            serde_json::to_value(status).unwrap_or_else(|_| json!({}))
+            json!({
+                "fingerprint": status.fingerprint,
+                "free_bytes": status.free_bytes,
+                "controllers_revision": status.controllers_revision,
+                "gpus": status.gpus,
+                "gpus_error": status.gpus_error,
+                "groups": group_rows(status, saved),
+                "cores": status.cores,
+            })
         }),
     })
 }
@@ -2585,12 +2629,6 @@ fn ls_document(
     statuses: &[Result<NodeStatus, Failure>],
     saved: &[&GroupSpec],
 ) -> Value {
-    let model = |name: &str| {
-        saved
-            .iter()
-            .find(|spec| spec.name == name)
-            .and_then(|spec| served_model_name(&spec.rank_zero))
-    };
     json!({
         "cluster": cluster,
         "saved": saved
@@ -2609,17 +2647,7 @@ fn ls_document(
             })
             .collect::<Vec<_>>(),
         "nodes": node_rows(nodes, statuses, |status| {
-            json!({
-                "groups": status
-                    .groups
-                    .iter()
-                    .map(|group| {
-                        let mut value = serde_json::to_value(group).unwrap_or_else(|_| json!({}));
-                        value["model"] = model(&group.name).into();
-                        value
-                    })
-                    .collect::<Vec<_>>(),
-            })
+            json!({"groups": group_rows(status, saved)})
         }),
     })
 }
@@ -2878,9 +2906,24 @@ mod tests {
             json!({"name": "ky01", "reachable": false, "error": "connection refused"})
         );
 
-        let status = status_document("sparks", &nodes, &statuses);
+        let status = status_document("sparks", &nodes, &statuses, &[&glm]);
+        let keys: Vec<&String> = status["nodes"][0].as_object().unwrap().keys().collect();
+        assert_eq!(
+            keys,
+            [
+                "name",
+                "reachable",
+                "fingerprint",
+                "free_bytes",
+                "controllers_revision",
+                "gpus",
+                "gpus_error",
+                "groups",
+                "cores"
+            ]
+        );
         assert_eq!(status["nodes"][0]["name"], "ky00");
-        assert_eq!(status["nodes"][0]["reachable"], true);
+        assert_eq!(status["nodes"][0]["groups"][1]["model"], "GLM");
         assert_eq!(status["nodes"][0]["free_bytes"], 5u64 << 30);
         assert_eq!(status["nodes"][0]["gpus"][0]["memory_free"], 40);
         assert_eq!(status["nodes"][0]["groups"][1]["id"], "glm-2");
