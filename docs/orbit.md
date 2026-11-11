@@ -392,11 +392,13 @@ the definition names.
 `status`, `ls` and `cores` print one JSON document on one line with `--json`:
 the `cluster` name and `nodes`, one object per node in cluster order with its
 `name` and `reachable`. A reachable node carries what the listing shows, with
-sizes in bytes: for `status` the fields of the STATUS reply, for `cores` its
-`free_bytes` and `cores`, for `ls` its `groups`, each with the `model` of the
-saved definition of that name. An unreachable node carries `error` instead, and
-the command still succeeds. `ls --json` also has `saved`, the definitions with
-`name`, `core`, `state` (`running`, `stopped` or `unknown`), `model`, `url`,
+sizes in bytes: for `status` its `fingerprint`, `free_bytes`,
+`controllers_revision`, `gpus`, `gpus_error`, `groups` and `cores`, for `cores`
+its `free_bytes` and `cores`, for `ls` its `groups`. Every group carries
+`model`, the alias of the saved definition of that name, or null without one.
+An unreachable node carries `error` instead, and the command still succeeds.
+`ls --json` also has `saved`, the definitions with `name`, `core`, `state`
+(`running`, `stopped` or `unknown`), `model`, `url`,
 `nodes` and `gpus`; `model` and `url` are null when the definition does not
 determine them.
 Persistence does not start services automatically after reboot. Start a stopped
@@ -552,6 +554,7 @@ one object per node with `name` and `reachable`, then the node's reply (`at`,
 `gpus_at`, `gpus`, `groups`) or the `error` that kept it from answering. Each
 group's `metrics` is the document rank zero serves at `/metrics?format=json`,
 read at `metrics_at`; both are null on peer ranks and before the first read.
+Each group also carries `model` as in the listings.
 `--watch` keeps one session per node open, as the dashboard does, and prints a
 line every second,
 reporting a node as unreachable until it first answers, until standard output
