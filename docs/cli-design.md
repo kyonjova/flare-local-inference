@@ -116,15 +116,17 @@ flare agent pair HOST... [--code CODE]    pair for --hosts or Orbit launches
 flare agent reset                        forget authorized controllers and pairing codes
 flare orbit pair HOST... [--code CODE]    pair this controller with hosts
 flare orbit controllers add NAME KEY | remove KEY
-flare orbit status [--cluster NAME]
+flare orbit status [--cluster NAME] [--json]
 flare orbit run [CORE] [--cluster NAME | --nodes NODE,...] [--name GROUP] [--persistent] [--executable PATH] [--dry-run] [serving flags] [--detach]
 flare orbit attach [GROUP] [--cluster NAME]
 flare orbit stop [GROUP] [--cluster NAME]
 flare orbit rm GROUP                     remove a stopped definition or retained launch
 flare orbit forget NODE                   remove a node from the orbit file
 flare orbit push CORE --to NODE,...    stage core data without starting ranks
-flare orbit cores [--cluster NAME]     what each node's cache holds
-flare orbit ls | dashboard [--cluster NAME]  groups on the cluster's nodes; their live metrics
+flare orbit cores [--cluster NAME] [--json]  what each node's cache holds
+flare orbit ls [--cluster NAME] [--json]     saved groups and retained runs on the cluster's nodes
+flare orbit dashboard [--cluster NAME]       their live metrics
+flare orbit metrics [--cluster NAME] [--watch]  the same metrics as JSON lines
 flare trust revoke FINGERPRINT
 ```
 

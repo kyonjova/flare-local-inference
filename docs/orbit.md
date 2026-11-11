@@ -30,15 +30,16 @@ processes to hosts and authenticates control and file-transfer requests.
 | `flare orbit pair HOST... [--code CODE]` | Controller | Pairs and records nodes |
 | `flare orbit controllers add NAME PUBLIC_KEY` / `remove KEY` | Controller | Writes and distributes the next controller-set revision |
 | `flare orbit run [CORE] [--cluster NAME \| --nodes NODE,...] [--name GROUP] [--persistent] [--gpus N,...] [--dry-run] [--detach] ...` | Controller | Places a group on the candidate nodes' GPUs, starts it and attaches; `--persistent` saves its named definition; `--dry-run` prints the placement only |
-| `flare orbit ls [--cluster NAME]` | Controller | Saved groups and retained runs on the cluster's nodes with their GPUs and state |
+| `flare orbit ls [--cluster NAME] [--json]` | Controller | Saved groups with their served model name and URL, and retained runs on the cluster's nodes with their GPUs and state |
 | `flare orbit dashboard [--cluster NAME]` | Controller | The serving process's live metrics dashboard for every group and GPU of the cluster |
+| `flare orbit metrics [--cluster NAME] [--watch]` | Controller | The same GPU readings and serving metrics as JSON, once or one line per second |
 | `flare orbit attach [GROUP] [--cluster NAME]` | Controller | Follows retained and live rank output; Ctrl-C detaches |
 | `flare orbit stop [GROUP] [--cluster NAME]` | Controller | Stops matching running groups, rank zero first |
-| `flare orbit status [--cluster NAME]` | Controller | Shows node capacity, groups, and cache inventory |
+| `flare orbit status [--cluster NAME] [--json]` | Controller | Shows node capacity, groups, and cache inventory |
 | `flare orbit rm GROUP` | Controller | Removes a stopped group's definition and history, or only the history when given a launch identifier |
 | `flare orbit forget NODE` | Controller | Removes a node from the orbit file |
 | `flare orbit push CORE --to NODE,...` | Controller | Stages core data without starting ranks |
-| `flare orbit cores [--cluster NAME]` | Controller | Every node's cache directories with their verification state |
+| `flare orbit cores [--cluster NAME] [--json]` | Controller | Every node's cache directories with their verification state |
 
 `flare run --rank R --rendezvous ADDR` starts an operator-managed peer and
 receives its core from rank zero. `flare run CORE --hosts PEER,...` starts
@@ -384,6 +385,20 @@ same saved name on the candidate nodes prevents another launch.
 `flare orbit ls` keeps saved groups visible when stopped. An unreachable node
 makes an inactive saved group's state unknown. Saved definitions belong to the
 controller's orbit file; other controllers need that file to reuse them.
+A saved group's line ends with the alias its `--served-model-name` option gives
+and the URL rank zero serves at, on the node running it or else the first node
+the definition names.
+
+`status`, `ls` and `cores` print one JSON document on one line with `--json`:
+the `cluster` name and `nodes`, one object per node in cluster order with its
+`name` and `reachable`. A reachable node carries what the listing shows, with
+sizes in bytes: for `status` the fields of the STATUS reply, for `cores` its
+`free_bytes` and `cores`, for `ls` its `groups`, each with the `model` of the
+saved definition of that name. An unreachable node carries `error` instead, and
+the command still succeeds. `ls --json` also has `saved`, the definitions with
+`name`, `core`, `state` (`running`, `stopped` or `unknown`), `model`, `url`,
+`nodes` and `gpus`; `model` and `url` are null when the definition does not
+determine them.
 Persistence does not start services automatically after reboot. Start a stopped
 group with `flare orbit run --name NAME`.
 
@@ -530,6 +545,17 @@ utilization, free memory, temperature and the group holding it. Groups and nodes
 appear and disappear as the agents report them, a node that stops answering is shown as
 unreachable until it answers again, the arrow keys select the group, and `q`
 leaves.
+
+`flare orbit metrics [--cluster NAME]` prints one METRICS sample as a line of
+JSON: `cluster`, the controller's clock `at` in Unix milliseconds, and `nodes`,
+one object per node with `name` and `reachable`, then the node's reply (`at`,
+`gpus_at`, `gpus`, `groups`) or the `error` that kept it from answering. Each
+group's `metrics` is the document rank zero serves at `/metrics?format=json`,
+read at `metrics_at`; both are null on peer ranks and before the first read.
+`--watch` keeps one session per node open, as the dashboard does, and prints a
+line every second,
+reporting a node as unreachable until it first answers, until standard output
+closes or the command is interrupted.
 
 ## Transport
 
