@@ -23,6 +23,7 @@ pub mod fabric;
 pub mod gpu;
 pub mod grant;
 pub mod identity;
+pub mod metrics;
 pub mod plan;
 pub mod session;
 pub mod store;
@@ -178,4 +179,12 @@ pub fn normalize_code(text: &str) -> String {
         .filter(|c| c.is_ascii_alphanumeric())
         .map(|c| c.to_ascii_uppercase())
         .collect()
+}
+
+/// The wall clock as Unix milliseconds.
+pub fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
