@@ -207,12 +207,7 @@ pub fn exchange_hello(session: &mut Session, mine: &Hello) -> Result<Hello, Fail
     }
 }
 
-fn now_millis() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use super::now_millis;
 
 /// The URL of rank zero's metrics endpoint for its last `--host` and `--port` options;
 /// a wildcard bind is reached through the loopback address.

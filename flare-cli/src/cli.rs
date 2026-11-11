@@ -378,6 +378,9 @@ pub enum OrbitCommand {
     Status {
         #[arg(long, value_name = "NAME")]
         cluster: Option<String>,
+        /// Print one JSON document instead of the table.
+        #[arg(long)]
+        json: bool,
     },
     /// Launch a core across nodes or start a saved group.
     Run(Box<OrbitRun>),
@@ -386,10 +389,21 @@ pub enum OrbitCommand {
         #[arg(long, value_name = "NAME")]
         cluster: Option<String>,
     },
+    /// Print every node's GPU readings and each group's serving metrics as JSON.
+    Metrics {
+        #[arg(long, value_name = "NAME")]
+        cluster: Option<String>,
+        /// Keep polling and print one JSON line per second until interrupted.
+        #[arg(long)]
+        watch: bool,
+    },
     /// List saved groups and retained runs on the cluster's nodes.
     Ls {
         #[arg(long, value_name = "NAME")]
         cluster: Option<String>,
+        /// Print one JSON document instead of the listing.
+        #[arg(long)]
+        json: bool,
     },
     /// Follow retained and live rank output; Ctrl-C detaches without stopping ranks.
     Attach {
@@ -424,6 +438,9 @@ pub enum OrbitCommand {
     Cores {
         #[arg(long, value_name = "NAME")]
         cluster: Option<String>,
+        /// Print one JSON document instead of the table.
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -1193,6 +1210,49 @@ impl ServingOptions {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn orbit_listings_take_json_and_metrics_takes_watch() {
+        let orbit = |arguments: &[&str]| {
+            let words = ["flare", "orbit"].iter().chain(arguments).copied();
+            match Cli::try_parse_from(words).unwrap().command {
+                Command::Orbit(orbit) => orbit.command,
+                _ => panic!("expected orbit"),
+            }
+        };
+        assert!(matches!(
+            orbit(&["status", "--json"]),
+            OrbitCommand::Status {
+                cluster: None,
+                json: true
+            }
+        ));
+        assert!(matches!(
+            orbit(&["ls"]),
+            OrbitCommand::Ls { json: false, .. }
+        ));
+        assert!(matches!(
+            orbit(&["cores", "--cluster", "sparks", "--json"]),
+            OrbitCommand::Cores {
+                cluster: Some(_),
+                json: true
+            }
+        ));
+        assert!(matches!(
+            orbit(&["metrics"]),
+            OrbitCommand::Metrics {
+                cluster: None,
+                watch: false
+            }
+        ));
+        assert!(matches!(
+            orbit(&["metrics", "--cluster", "sparks", "--watch"]),
+            OrbitCommand::Metrics {
+                cluster: Some(_),
+                watch: true
+            }
+        ));
+    }
 
     #[test]
     fn canonical_core_cache_flag_accepts_hidden_legacy_aliases() {

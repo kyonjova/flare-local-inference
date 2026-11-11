@@ -415,8 +415,11 @@ fn orbit_command(args: cli::OrbitArgs, matches: &clap::ArgMatches) -> Result<(),
         cli::OrbitCommand::Controllers {
             command: cli::ControllersCommand::Remove { key },
         } => controller.controllers_remove(&key),
-        cli::OrbitCommand::Status { cluster } => controller.status(cluster.as_deref()),
-        cli::OrbitCommand::Ls { cluster } => controller.ls(cluster.as_deref()),
+        cli::OrbitCommand::Status { cluster, json } => controller.status(cluster.as_deref(), json),
+        cli::OrbitCommand::Ls { cluster, json } => controller.ls(cluster.as_deref(), json),
+        cli::OrbitCommand::Metrics { cluster, watch } => {
+            orbit::metrics::run(&controller, cluster.as_deref(), watch)
+        }
         cli::OrbitCommand::Dashboard { cluster } => {
             orbit::dashboard::run(&controller, cluster.as_deref())
         }
@@ -434,7 +437,7 @@ fn orbit_command(args: cli::OrbitArgs, matches: &clap::ArgMatches) -> Result<(),
             &mut push.run_args(),
             push.transfer_streams,
         ),
-        cli::OrbitCommand::Cores { cluster } => controller.cores(cluster.as_deref()),
+        cli::OrbitCommand::Cores { cluster, json } => controller.cores(cluster.as_deref(), json),
         cli::OrbitCommand::Run(run) => controller.run(
             run.core.as_deref(),
             run.cluster.as_deref(),

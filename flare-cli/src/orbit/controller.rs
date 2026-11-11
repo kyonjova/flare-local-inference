@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use flare_helios::core::progress::{self, Rate};
 use flare_helios::runtime_core::{self, AuthorizedCore, Publisher};
 use flare_helios::startup::StartupProgress;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use super::cache;
@@ -79,7 +79,7 @@ fn interrupted() -> bool {
 }
 
 /// What STATUS reports about a node.
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NodeStatus {
     pub fingerprint: String,
     pub free_bytes: u64,
@@ -101,12 +101,15 @@ pub struct NodeStatus {
     pub address_toward: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GroupStatus {
     pub id: String,
     #[serde(default)]
     pub name: String,
     pub rank: usize,
+    /// The core the rank loaded, as the node names it.
+    #[serde(default, alias = "package")]
+    pub core: String,
     #[serde(default)]
     pub gpus: Vec<String>,
     pub running: bool,
@@ -114,7 +117,7 @@ pub struct GroupStatus {
     pub uptime_seconds: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct GpuStatus {
     pub index: u32,
     pub uuid: String,
@@ -126,7 +129,7 @@ pub struct GpuStatus {
     pub group: Option<String>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CoreStatus {
     pub name: String,
     pub files: Vec<CoreFileStatus>,
@@ -134,8 +137,7 @@ pub struct CoreStatus {
     pub bytes: u64,
 }
 
-#[derive(Clone, Debug, Deserialize)]
-#[allow(dead_code)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct CoreFileStatus {
     pub name: String,
     pub size: u64,
@@ -507,10 +509,13 @@ impl Controller {
     }
 
     /// Print every node of a cluster with its free cache space, controller-set revision, GPUs
-    /// with their holders, and the groups it runs.
-    pub fn status(&self, cluster: Option<&str>) -> Result<(), Failure> {
+    /// with their holders, and the groups it runs; with `json`, as one document.
+    pub fn status(&self, cluster: Option<&str>, json: bool) -> Result<(), Failure> {
         let (name, nodes) = self.cluster(cluster)?;
         let results = parallel(&nodes, |_, node| self.query_status(node, None));
+        if json {
+            return print_document(&status_document(&name, &nodes, &results));
+        }
         let width = nodes.iter().map(|n| n.name.len()).max().unwrap_or(0).max(4);
         println!("cluster {name}");
         println!(
@@ -574,17 +579,35 @@ impl Controller {
         Ok(())
     }
 
-    /// Print every group on the cluster's nodes: name, identifier, node, rank, GPUs, state.
-    pub fn ls(&self, cluster: Option<&str>) -> Result<(), Failure> {
+    /// Print every group on the cluster's nodes: name, identifier, node, rank, GPUs, state; with
+    /// `json`, as one document.
+    pub fn ls(&self, cluster: Option<&str>, json: bool) -> Result<(), Failure> {
         let (name, nodes) = self.cluster(cluster)?;
         let results = parallel(&nodes, |_, node| self.query_status(node, None));
+        let saved: Vec<&GroupSpec> = self
+            .orbit
+            .group
+            .iter()
+            .filter(|spec| {
+                spec.nodes.is_empty() || nodes.iter().any(|node| spec.nodes.contains(&node.name))
+            })
+            .collect();
+        if json {
+            return print_document(&ls_document(&name, &nodes, &results, &saved));
+        }
         println!("cluster {name}");
-        for spec in &self.orbit.group {
-            if !spec.nodes.is_empty() && !nodes.iter().any(|node| spec.nodes.contains(&node.name)) {
-                continue;
-            }
+        for spec in saved {
             let state = saved_group_state(spec, &results);
-            println!("persistent {}: {state}; {}", spec.name, spec.core);
+            let serves = match (
+                served_model_name(&spec.rank_zero),
+                saved_group_url(spec, &nodes, &results),
+            ) {
+                (Some(model), Some(url)) => format!("; {model} at {url}"),
+                (Some(model), None) => format!("; {model}"),
+                (None, Some(url)) => format!("; {url}"),
+                (None, None) => String::new(),
+            };
+            println!("persistent {}: {state}; {}{serves}", spec.name, spec.core);
         }
         println!(
             "{:<16}  {:<36}  {:<10}  {:>4}  {:<24}  STATE",
@@ -1007,10 +1030,13 @@ impl Controller {
         Ok(())
     }
 
-    /// Print what every node of a cluster holds in its core cache.
-    pub fn cores(&self, cluster: Option<&str>) -> Result<(), Failure> {
+    /// Print what every node of a cluster holds in its core cache; with `json`, as one document.
+    pub fn cores(&self, cluster: Option<&str>, json: bool) -> Result<(), Failure> {
         let (name, nodes) = self.cluster(cluster)?;
         let results = parallel(&nodes, |_, node| self.query_status(node, None));
+        if json {
+            return print_document(&cores_document(&name, &nodes, &results));
+        }
         println!("cluster {name}");
         println!(
             "{:<10}  {:<52}  {:>5}  {:>10}  STATE",
@@ -2451,6 +2477,155 @@ pub fn serving_url(rank_zero: &[String], node_address: &str) -> String {
     format!("http://{host}:{port}")
 }
 
+/// The alias rank zero serves the model under: the last `--served-model-name` among its
+/// options, as the serving command line resolves repeats. None leaves the core's own names.
+pub fn served_model_name(rank_zero: &[String]) -> Option<String> {
+    let mut name = None;
+    let mut arguments = rank_zero.iter();
+    while let Some(argument) = arguments.next() {
+        if let Some(value) = argument.strip_prefix("--served-model-name=") {
+            name = Some(value.to_owned());
+        } else if argument == "--served-model-name"
+            && let Some(value) = arguments.next()
+        {
+            name = Some(value.clone());
+        }
+    }
+    name
+}
+
+/// Where a saved group's rank zero serves: on the node running it, else on the first node its
+/// definition names. None when neither is known.
+fn saved_group_url(
+    spec: &GroupSpec,
+    nodes: &[Node],
+    statuses: &[Result<NodeStatus, Failure>],
+) -> Option<String> {
+    let running = nodes.iter().zip(statuses).find(|(_, status)| {
+        status.as_ref().is_ok_and(|status| {
+            status
+                .running()
+                .any(|group| group.name == spec.name && group.rank == 0)
+        })
+    });
+    let node = match running {
+        Some((node, _)) => node,
+        None => {
+            let first = spec.nodes.first()?;
+            nodes.iter().find(|node| &node.name == first)?
+        }
+    };
+    Some(serving_url(&spec.rank_zero, &node.address))
+}
+
+/// One row per node for a JSON document: the node's name and `reachable`, then either `row`'s
+/// fields or the `error` that kept the node from answering.
+fn node_rows(
+    nodes: &[Node],
+    statuses: &[Result<NodeStatus, Failure>],
+    row: impl Fn(&NodeStatus) -> Value,
+) -> Vec<Value> {
+    nodes
+        .iter()
+        .zip(statuses)
+        .map(|(node, status)| match status {
+            Ok(status) => {
+                let mut value = row(status);
+                value["name"] = node.name.clone().into();
+                value["reachable"] = true.into();
+                value
+            }
+            Err(error) => {
+                json!({"name": node.name, "reachable": false, "error": error.to_string()})
+            }
+        })
+        .collect()
+}
+
+/// `flare orbit status --json`: every node with what STATUS reported about it.
+fn status_document(
+    cluster: &str,
+    nodes: &[Node],
+    statuses: &[Result<NodeStatus, Failure>],
+) -> Value {
+    json!({
+        "cluster": cluster,
+        "nodes": node_rows(nodes, statuses, |status| {
+            serde_json::to_value(status).unwrap_or_else(|_| json!({}))
+        }),
+    })
+}
+
+/// `flare orbit cores --json`: every node's free cache space and cache directories.
+fn cores_document(
+    cluster: &str,
+    nodes: &[Node],
+    statuses: &[Result<NodeStatus, Failure>],
+) -> Value {
+    json!({
+        "cluster": cluster,
+        "nodes": node_rows(nodes, statuses, |status| {
+            json!({"free_bytes": status.free_bytes, "cores": status.cores})
+        }),
+    })
+}
+
+/// `flare orbit ls --json`: the saved definitions with their state, served model name and
+/// URL, and every node's running and retained groups. A group carries the `model` of the saved
+/// definition with its name.
+fn ls_document(
+    cluster: &str,
+    nodes: &[Node],
+    statuses: &[Result<NodeStatus, Failure>],
+    saved: &[&GroupSpec],
+) -> Value {
+    let model = |name: &str| {
+        saved
+            .iter()
+            .find(|spec| spec.name == name)
+            .and_then(|spec| served_model_name(&spec.rank_zero))
+    };
+    json!({
+        "cluster": cluster,
+        "saved": saved
+            .iter()
+            .map(|spec| {
+                json!({
+                    "name": spec.name,
+                    "core": spec.core,
+                    // The listing's "unknown (node unreachable)" is plain "unknown" here.
+                    "state": saved_group_state(spec, statuses).split(' ').next(),
+                    "model": served_model_name(&spec.rank_zero),
+                    "url": saved_group_url(spec, nodes, statuses),
+                    "nodes": spec.nodes,
+                    "gpus": spec.gpus,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "nodes": node_rows(nodes, statuses, |status| {
+            json!({
+                "groups": status
+                    .groups
+                    .iter()
+                    .map(|group| {
+                        let mut value = serde_json::to_value(group).unwrap_or_else(|_| json!({}));
+                        value["model"] = model(&group.name).into();
+                        value
+                    })
+                    .collect::<Vec<_>>(),
+            })
+        }),
+    })
+}
+
+/// Write a JSON document to standard output as one line.
+fn print_document(document: &Value) -> Result<(), Failure> {
+    let mut output = io::stdout().lock();
+    serde_json::to_writer(&mut output, document)?;
+    output.write_all(b"\n")?;
+    Ok(())
+}
+
 fn describe_gpus(status: &NodeStatus, uuids: &[String]) -> String {
     if uuids.is_empty() {
         return "the node's GPUs".into();
@@ -2593,6 +2768,127 @@ mod tests {
     use super::*;
     use crate::orbit::agent::tests::{harness, pair_accept_first};
     use std::sync::Arc;
+
+    fn listed_node(name: &str, address: &str) -> Node {
+        Node {
+            name: name.into(),
+            fingerprint: String::new(),
+            public_key: String::new(),
+            address: address.into(),
+        }
+    }
+
+    fn listed_status(groups: Value) -> Result<NodeStatus, Failure> {
+        Ok(serde_json::from_value(json!({
+            "fingerprint": "88a30ca2b2cb",
+            "free_bytes": 5u64 << 30,
+            "controllers_revision": 1,
+            "group": null,
+            "groups": groups,
+            "gpus": [{"index": 0, "uuid": "GPU-a", "name": "NVIDIA GB10", "revision": "gb10",
+                      "memory_total": 100, "memory_free": 40, "group": null}],
+            "cores": [{"name": "core-1", "files": [{"name": "model.safetensors", "size": 9}],
+                       "verified": true, "bytes": 9}],
+        }))?)
+    }
+
+    #[test]
+    fn the_served_model_name_is_the_last_one_among_rank_zero_options() {
+        let words = |words: &[&str]| words.iter().map(|w| (*w).to_owned()).collect::<Vec<_>>();
+        assert_eq!(served_model_name(&words(&["--port", "7777"])), None);
+        assert_eq!(
+            served_model_name(&words(&["--served-model-name", "A", "--port", "7777"])),
+            Some("A".into())
+        );
+        assert_eq!(
+            served_model_name(&words(&[
+                "--served-model-name",
+                "A",
+                "--served-model-name=B"
+            ])),
+            Some("B".into())
+        );
+        assert_eq!(served_model_name(&words(&["--served-model-name"])), None);
+    }
+
+    #[test]
+    fn json_documents_list_nodes_saved_groups_and_unreachable_nodes() {
+        let nodes = [
+            listed_node("ky00", "10.0.100.10:29900"),
+            listed_node("ky01", "10.0.100.11:29900"),
+        ];
+        let run = |id: &str, rank: usize, running: bool| {
+            json!({"id": id, "name": "glm", "rank": rank, "core": "core-1", "gpus": ["GPU-a"],
+                   "running": running, "exit": if running { Value::Null } else { json!(-1) },
+                   "uptime_seconds": 60})
+        };
+        let statuses = vec![
+            listed_status(json!([run("glm-1", 0, false), run("glm-2", 0, true)])),
+            Err("connection refused".into()),
+        ];
+        let spec = |name: &str, nodes: &[&str], rank_zero: &[&str]| GroupSpec {
+            name: name.into(),
+            core: format!("/cores/{name}.safetensors"),
+            rank_zero: rank_zero.iter().map(|w| (*w).to_owned()).collect(),
+            nodes: nodes.iter().map(|n| (*n).to_owned()).collect(),
+            ..GroupSpec::default()
+        };
+        let glm = spec(
+            "glm",
+            &["ky00", "ky01"],
+            &[
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "7777",
+                "--served-model-name",
+                "GLM",
+            ],
+        );
+        let other = spec("other", &["ky01", "ky00"], &[]);
+        let bare = spec("bare", &[], &[]);
+
+        let ls = ls_document("sparks", &nodes, &statuses, &[&glm, &other, &bare]);
+        assert_eq!(ls["cluster"], "sparks");
+        assert_eq!(
+            ls["saved"][0],
+            json!({"name": "glm", "core": "/cores/glm.safetensors", "state": "running",
+                   "model": "GLM", "url": "http://10.0.100.10:7777",
+                   "nodes": ["ky00", "ky01"], "gpus": []})
+        );
+        assert_eq!(ls["saved"][1]["state"], "unknown");
+        assert_eq!(ls["saved"][1]["model"], Value::Null);
+        assert_eq!(ls["saved"][1]["url"], "http://127.0.0.1:8000");
+        assert_eq!(ls["saved"][2]["url"], Value::Null);
+        let groups = ls["nodes"][0]["groups"].as_array().unwrap();
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0]["id"], "glm-1");
+        assert_eq!(groups[0]["exit"], -1);
+        assert_eq!(groups[1]["running"], true);
+        assert_eq!(groups[1]["core"], "core-1");
+        assert_eq!(groups[1]["model"], "GLM");
+        assert_eq!(
+            ls["nodes"][1],
+            json!({"name": "ky01", "reachable": false, "error": "connection refused"})
+        );
+
+        let status = status_document("sparks", &nodes, &statuses);
+        assert_eq!(status["nodes"][0]["name"], "ky00");
+        assert_eq!(status["nodes"][0]["reachable"], true);
+        assert_eq!(status["nodes"][0]["free_bytes"], 5u64 << 30);
+        assert_eq!(status["nodes"][0]["gpus"][0]["memory_free"], 40);
+        assert_eq!(status["nodes"][0]["groups"][1]["id"], "glm-2");
+        assert_eq!(status["nodes"][1]["reachable"], false);
+
+        let cores = cores_document("sparks", &nodes, &statuses);
+        assert_eq!(
+            cores["nodes"][0],
+            json!({"name": "ky00", "reachable": true, "free_bytes": 5u64 << 30,
+                   "cores": [{"name": "core-1", "verified": true, "bytes": 9,
+                              "files": [{"name": "model.safetensors", "size": 9}]}]})
+        );
+        assert_eq!(cores["nodes"][1]["error"], "connection refused");
+    }
 
     #[test]
     fn download_rows_carry_the_node_and_honest_counters() {
