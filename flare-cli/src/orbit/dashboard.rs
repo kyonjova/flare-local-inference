@@ -49,10 +49,10 @@ const POLL: Duration = Duration::from_millis(500);
 const RECONNECT: Duration = Duration::from_secs(2);
 const REFRESH: Duration = Duration::from_millis(250);
 
-/// What one poll of a node produced.
-struct Update {
-    node: usize,
-    result: Result<Value, String>,
+/// What one poll of a node produced: its METRICS reply, or why it did not answer.
+pub(super) struct Update {
+    pub(super) node: usize,
+    pub(super) result: Result<Value, String>,
 }
 
 #[derive(Clone, Default)]
@@ -260,7 +260,9 @@ pub fn run(controller: &Controller, cluster: Option<&str>) -> Result<(), Failure
     })
 }
 
-fn poll_node(
+/// Poll one node's METRICS twice a second until `stop` is set or the receiver goes away,
+/// reconnecting after a failure.
+pub(super) fn poll_node(
     controller: &Controller,
     node: &Node,
     index: usize,
