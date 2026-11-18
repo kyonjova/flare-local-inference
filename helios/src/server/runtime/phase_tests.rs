@@ -3877,6 +3877,7 @@ fn http_state_for(
     Arc::new(HttpState {
         first_response: Arc::new(super::super::latency::FirstResponseSamples::default()),
         log_to_stderr: false,
+        response_model: model.config().model_id.clone(),
         model,
         frontend: Arc::new(fixture.frontend),
         images: None,
@@ -3892,7 +3893,6 @@ fn http_state_for(
         thinking_token_budget: None,
         context_hint: String::new(),
         capacity_hint: String::new(),
-        response_model: model.config().model_id.clone(),
         started: std::time::Instant::now(),
         generated: Default::default(),
         accepting: Mutex::new(true),
