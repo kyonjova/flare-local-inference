@@ -66,6 +66,18 @@ fn select_snapshots(
             Some((id, cost))
         })
         .collect();
+    // Bound the pair-enumeration work. With heavily shared prefixes every posting list
+    // carries almost every candidate, so the pair loop approaches O(n^2 * pages) and a
+    // single quote can burn seconds of scheduler time. Candidates arrive in id order,
+    // and ties already prefer lower ids, so truncating keeps the documented preference
+    // while capping the worst case.
+    const MAX_PAIR_CANDIDATES: usize = 128;
+    let truncated = candidates.len() > MAX_PAIR_CANDIDATES;
+    let candidates = if truncated {
+        candidates.into_iter().take(MAX_PAIR_CANDIDATES).collect::<Vec<_>>()
+    } else {
+        candidates
+    };
     if count == 1 {
         // The lowest cost, ties to the lowest id, skipping candidates whose cost exceeds the
         // spare pages. One row is the shape of a quote for an anchor-only capture, so this
@@ -1464,5 +1476,39 @@ mod tests {
             )
             .and_then(|ids| ids.first().copied())
         );
+    }
+}
+
+#[cfg(test)]
+mod wedge_bench {
+    use super::*;
+
+    // 合成"共享前缀"工作负载: base_pages 被所有候选共享, 每个候选再独占 tail_pages
+    #[test]
+    fn select_snapshots_shared_prefix_blowup() {
+        let pages: usize = 327_680;          // 假设 page_tokens=64: 20.98M KV tokens
+        let base_pages: usize = 45;          // ~90k token 共享前缀
+        let tail_pages: usize = 4;
+        let n_candidates: usize = 1986;      // 全部快照槽都在候选集
+        let keep = pages / 2;
+
+        let backing = vec![true; pages];
+        let protected = vec![0u32; pages];
+        let mut ranges = vec![0u32..0; n_candidates];
+        for i in 0..n_candidates {
+            let start = (base_pages + i * tail_pages) as u32;
+            ranges[i] = 0u32..(start + tail_pages as u32); // 覆盖共享前缀+私有尾页
+        }
+        let candidates: BTreeSet<SnapshotId> =
+            (0..n_candidates).map(|i| SnapshotId(i as u32)).collect();
+
+        let t = std::time::Instant::now();
+        let r = select_snapshots(&backing, &protected, &ranges, &candidates, keep, 2);
+        let elapsed = t.elapsed();
+        assert_eq!(r.as_ref().map(|v| v.len()), Some(2), "a quotable pair must still be found");
+        println!("select(shared-prefix, {} candidates) took {:?}", n_candidates, elapsed);
+        // Guard against the pathological pair-enumeration blowup: unbounded this
+        // takes ~9.4 s on this input; leave generous margin for slower CI hosts.
+        assert!(elapsed < std::time::Duration::from_secs(5), "pair enumeration is unbounded again");
     }
 }
