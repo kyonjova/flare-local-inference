@@ -2217,6 +2217,7 @@ impl RequestScheduler {
                 else if step.lane_kind(row).is_prefill() { lane.tokens as f64 } else { 0.0 }
             }));
         let participants = self.service_participants();
+        self.invalidate_checkpoint_selections();
         let submitted_timing = SubmittedTiming {
             retained_ns: plan.selected_cost.retained_ns,
             observed_at_ns: plan.selected_cost.observed_at_ns,

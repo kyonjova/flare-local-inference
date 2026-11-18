@@ -107,9 +107,31 @@ impl LiveRequest {
 }
 
 impl RequestScheduler {
-    pub(super) fn checkpoint_planning_scope(&self) -> PlanningScope<'_> {
-        *self.checkpoint_selections.borrow_mut() = Some(HashMap::new());
-        PlanningScope(&self.checkpoint_selections)
+    pub(super) fn checkpoint_planning_scope(&self) -> Option<PlanningScope<'_>> {
+        self.begin_checkpoint_planning()
+            .then(|| PlanningScope(&self.checkpoint_selections))
+    }
+
+    /// If this opens the cache, the caller must call `end_checkpoint_planning`.
+    /// While open, only `advance_to` and `commit` may change checkpoint-selection inputs.
+    pub(crate) fn begin_checkpoint_planning(&self) -> bool {
+        let mut cache = self.checkpoint_selections.borrow_mut();
+        if cache.is_some() {
+            return false;
+        }
+        *cache = Some(HashMap::new());
+        true
+    }
+
+    #[cfg(any(feature = "server", test))]
+    pub(crate) fn end_checkpoint_planning(&self) {
+        *self.checkpoint_selections.borrow_mut() = None;
+    }
+
+    pub(super) fn invalidate_checkpoint_selections(&self) {
+        if let Some(cache) = self.checkpoint_selections.borrow_mut().as_mut() {
+            cache.clear();
+        }
     }
     pub(super) fn revoke_unused_anchor_guards(&mut self) -> bool {
         let handle = self
@@ -674,6 +696,182 @@ mod tests {
             );
         }
         measure(scheduler, GraphKind::Snapshot, 1, 1);
+    }
+
+    fn loaded_scheduler() -> RequestScheduler {
+        let mut scheduler = super::super::tests::scheduler(16, 2048, 64);
+        scheduler
+            .prefill_graphs(&(64..=512).step_by(64).collect::<Vec<_>>())
+            .unwrap();
+        linear_costs(&mut scheduler);
+        for slot in 0..16 {
+            let mut spec = super::super::tests::spec(1024, 3);
+            spec.prompt[0] += slot + 100_000;
+            spec.message_boundaries = vec![128, 256, 512, 896];
+            scheduler.admit(spec).unwrap();
+        }
+        scheduler
+    }
+
+    #[test]
+    fn checkpoint_selection_preserves_plans_and_prices_over_loaded_trace() {
+        let trace = |cached: bool| {
+            let mut scheduler = loaded_scheduler();
+            let mut trace = Vec::new();
+            let mut snapshots = 0;
+            for sequence in 1..=512 {
+                if cached {
+                    scheduler.begin_checkpoint_planning();
+                }
+                let Some(plan) = scheduler.plan() else {
+                    if cached {
+                        scheduler.end_checkpoint_planning();
+                    }
+                    break;
+                };
+                trace.push(format!("{plan:?}"));
+                snapshots += usize::from(plan.kind == GraphKind::Snapshot);
+                let fence = Fence(sequence);
+                scheduler
+                    .advance_to(scheduler.now_ns + plan.estimated_duration_ns)
+                    .unwrap();
+                scheduler.commit(&plan, fence).unwrap();
+                if cached {
+                    assert!(
+                        scheduler
+                            .checkpoint_selections
+                            .borrow()
+                            .as_ref()
+                            .unwrap()
+                            .is_empty()
+                    );
+                    scheduler.end_checkpoint_planning();
+                }
+                let mut records = vec![CompletionRecord::default(); 16];
+                for (row, lane) in plan.lanes.iter().enumerate() {
+                    let request = scheduler.request(lane.request).unwrap();
+                    let kind = plan.lane_kind(row);
+                    let consumed = if kind.is_prefill() || kind == GraphKind::Decode {
+                        lane.start_position + lane.tokens as u64
+                    } else {
+                        request.consumed_tokens
+                    };
+                    let output = kind == GraphKind::Decode
+                        || kind == GraphKind::Resume
+                        || (kind.is_prefill() && consumed == request.prompt_tokens as u64);
+                    records[lane.request.slot as usize] = CompletionRecord {
+                        generation: lane.request.generation as i64,
+                        submission_sequence: sequence as i64,
+                        status: 1,
+                        consumed_tokens: consumed as i64,
+                        generated_tokens: request.generated_tokens as i64 + i64::from(output),
+                        token_id: if output { 42 } else { -1 },
+                        ..Default::default()
+                    };
+                }
+                let generated = scheduler
+                    .complete(
+                        fence,
+                        &records,
+                        crate::execution::ExecutionTiming {
+                            gpu_ns: [Some(plan.estimated_duration_ns); 16],
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                for token in generated {
+                    scheduler.published_output(token.request, fence).unwrap();
+                }
+                let mut finished = Vec::new();
+                for request in scheduler.slots.iter().filter_map(|s| s.request.as_ref()) {
+                    let service = request.accounting.service;
+                    trace.push(format!(
+                        "{:?} {:?} {:?}",
+                        request.handle,
+                        service.tokens.map(|p| p.log_price(1.0).to_bits()),
+                        service.deliveries.map(|p| p.log_price(1.0).to_bits())
+                    ));
+                    if request.phase == RequestPhase::Finishing {
+                        finished.push(request.handle);
+                    }
+                }
+                for handle in finished {
+                    scheduler.finish(handle).unwrap();
+                }
+                assert!(scheduler.checkpoint_selections.borrow().is_none());
+            }
+            assert!(scheduler.slots.iter().all(|s| s.request.is_none()));
+            assert!(snapshots >= 16);
+            trace
+        };
+        assert_eq!(trace(false), trace(true));
+    }
+
+    #[test]
+    fn commit_storage_simulations_do_not_scale_with_prefill_capacities() {
+        let mut scheduler = loaded_scheduler();
+        let single_pass: usize = scheduler
+            .slots
+            .iter()
+            .filter_map(|s| s.request.as_ref())
+            .map(|request| {
+                cache_memory::STORAGE_SIMULATIONS.set(0);
+                scheduler.checkpoint_selection_uncached(request);
+                cache_memory::STORAGE_SIMULATIONS.get()
+            })
+            .sum();
+        assert!(single_pass > 0);
+        assert!(scheduler.prefill_catalog.len() >= 8);
+        scheduler.begin_checkpoint_planning();
+        cache_memory::STORAGE_SIMULATIONS.set(0);
+        let plan = scheduler.plan().unwrap();
+        assert_eq!(plan.kind, GraphKind::Init);
+        assert_eq!(cache_memory::STORAGE_SIMULATIONS.get(), single_pass);
+        scheduler.advance_to(1).unwrap();
+        cache_memory::STORAGE_SIMULATIONS.set(0);
+        scheduler.commit(&plan, Fence(1)).unwrap();
+        assert_eq!(cache_memory::STORAGE_SIMULATIONS.get(), 0);
+        assert!(
+            scheduler
+                .checkpoint_selections
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        scheduler.end_checkpoint_planning();
+        assert!(scheduler.checkpoint_selections.borrow().is_none());
+    }
+
+    #[test]
+    fn checkpoint_selection_recomputes_when_snapshot_cost_expires() {
+        let mut scheduler = loaded_scheduler();
+        scheduler.begin_checkpoint_planning();
+        scheduler.plan().unwrap();
+        assert!(
+            !scheduler
+                .checkpoint_selections
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        scheduler
+            .advance_to(scheduler.policy.estimate_ttl_ns + 1)
+            .unwrap();
+        assert!(
+            scheduler
+                .checkpoint_selections
+                .borrow()
+                .as_ref()
+                .unwrap()
+                .is_empty()
+        );
+        let request = scheduler.slots[0].request.as_ref().unwrap();
+        let selected = scheduler.checkpoint_selection(request);
+        assert_eq!(selected, scheduler.checkpoint_selection_uncached(request));
+        assert_eq!(selected.0.cuts.len(), 1);
+        scheduler.end_checkpoint_planning();
     }
 
     #[test]

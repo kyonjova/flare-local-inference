@@ -8,6 +8,11 @@
 
 use super::*;
 
+#[cfg(test)]
+thread_local! {
+    pub(super) static STORAGE_SIMULATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct SnapshotQuote {
     pub(super) snapshots: Vec<SnapshotId>,
@@ -262,6 +267,8 @@ impl RequestScheduler {
         rank: crate::cache::RetentionRank,
         allowed: Option<&BTreeSet<SnapshotId>>,
     ) -> Option<SnapshotQuote> {
+        #[cfg(test)]
+        STORAGE_SIMULATIONS.set(STORAGE_SIMULATIONS.get() + 1);
         let keep_pages = keep_pages.max(self.decode_growth_pages());
         let mut cache = self.cache.clone();
         let mut backing = self.free_backing();

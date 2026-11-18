@@ -237,8 +237,12 @@ impl RequestScheduler {
         if now_ns < self.now_ns {
             return Err("scheduler clock must be monotonic".into());
         }
+        let snapshot_cost = self.costs.fresh_duration(GraphKind::Snapshot, 1);
         self.now_ns = now_ns;
         self.costs.advance_to(now_ns, self.policy.estimate_ttl_ns);
+        if snapshot_cost != self.costs.fresh_duration(GraphKind::Snapshot, 1) {
+            self.invalidate_checkpoint_selections();
+        }
         Ok(())
     }
 

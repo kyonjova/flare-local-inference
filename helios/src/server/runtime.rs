@@ -698,6 +698,7 @@ impl ModelRuntime {
                 let run = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     worker.run(&mut executor)
                 }));
+                worker.scheduler.end_checkpoint_planning();
                 worker_health.store(false, Ordering::Release);
                 let error = match run {
                     Ok(Ok(())) => None,
@@ -1102,11 +1103,18 @@ impl<'a> Worker<'a> {
             }
             progress |= self.publish()?;
             progress |= self.service_store()?;
-            let (step, planned) = self.plan(executor.outstanding())?;
-            progress |= planned;
-            if let Some(step) = step {
-                progress |= self.submit(executor, &step)?;
-            }
+            // Only clock advancement separates selection from commit; commit clears
+            // checkpoint decisions before changing request or storage state.
+            self.scheduler.begin_checkpoint_planning();
+            let planned = (|| -> Result<bool> {
+                let (step, mut progress) = self.plan(executor.outstanding())?;
+                if let Some(step) = step {
+                    progress |= self.submit(executor, &step)?;
+                }
+                Ok(progress)
+            })();
+            self.scheduler.end_checkpoint_planning();
+            progress |= planned?;
             if progress {
                 self.metrics.scheduler(self.scheduler.stats());
                 self.metrics
