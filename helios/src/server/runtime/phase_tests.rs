@@ -3892,6 +3892,7 @@ fn http_state_for(
         thinking_token_budget: None,
         context_hint: String::new(),
         capacity_hint: String::new(),
+        response_model: model.config().model_id.clone(),
         started: std::time::Instant::now(),
         generated: Default::default(),
         accepting: Mutex::new(true),

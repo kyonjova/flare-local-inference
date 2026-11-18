@@ -344,7 +344,7 @@ pub(super) async fn generate(
     let mut encoder = Encoder::new(
         protocol,
         id.clone(),
-        state.model.config().model_id.clone(),
+        state.response_model.clone(),
         created,
         decoded.request.choices,
         prompt_usage,
