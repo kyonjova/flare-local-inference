@@ -184,6 +184,8 @@ URLs. JPEG uses
 accurate IDCT, smooth chroma upsampling, and at most 100 progressive scans.
 Baseline/progressive Huffman JPEG is supported; lossless and arithmetic JPEG
 are rejected. Encoded byte and decoded pixel limits apply before pixel allocation.
+PNG samples wider than 8 bits are stripped to their high byte, matching Pillow's
+RGB conversion. Animated PNG is rejected.
 PNG and JPEG EXIF orientation is applied before resize; orientations 1–8 include
 mirrored and axis-swapped images. Invalid orientation metadata is rejected.
 RGB conversion discards alpha and does not apply embedded color profiles.

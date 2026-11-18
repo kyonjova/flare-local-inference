@@ -445,7 +445,8 @@ impl ImageProcessor {
     }
 
     /// Decodes PNG with the prepared profile’s alpha and orientation semantics.
-    /// Animated PNG and 16-bit samples are rejected.
+    /// Animated PNG is rejected. 16-bit samples are stripped to the high byte,
+    /// matching Pillow's RGB conversion.
     pub fn decode_png(&self, bytes: &[u8]) -> Result<RgbImage> {
         if bytes.len() > self.limits.max_encoded_bytes {
             return Err(Error::frontend(FrontendError::Input(Failure::new(
@@ -453,7 +454,9 @@ impl ImageProcessor {
             ))));
         }
         let mut decoder = png::Decoder::new(Cursor::new(bytes));
-        decoder.set_transformations(png::Transformations::EXPAND);
+        decoder.set_transformations(
+            png::Transformations::EXPAND | png::Transformations::STRIP_16,
+        );
         decoder.set_limits(png::Limits {
             bytes: self.limits.max_input_pixels.saturating_mul(8),
         });
@@ -465,9 +468,9 @@ impl ImageProcessor {
         })?;
         let info = reader.info();
         self.check_input_extent(info.width as usize, info.height as usize)?;
-        if info.bit_depth == png::BitDepth::Sixteen || info.animation_control.is_some() {
+        if info.animation_control.is_some() {
             return Err(Error::frontend(FrontendError::ImageDecode(Failure::new(
-                "PNG requires non-animated, at most 8-bit samples",
+                "animated PNG is not supported",
             ))));
         }
         // The padded grid composites every PNG transparency form that Pillow reports, including
@@ -926,7 +929,7 @@ mod tests {
     }
 
     #[test]
-    fn png_drops_alpha_without_blending_and_rejects_sixteen_bit_or_truncated() {
+    fn png_drops_alpha_and_strips_sixteen_bit_samples() {
         let processor = processor(ImageLimits::default());
         let bytes = png(
             2,
@@ -940,16 +943,38 @@ mod tests {
             &[5, 6, 7, 8, 9, 10]
         );
         assert!(processor.decode_png(&bytes[..bytes.len() - 12]).is_err());
-        let sixteen = png(
+        let sixteen_rgb = png(
+            1,
+            1,
+            png::BitDepth::Sixteen,
+            png::ColorType::Rgb,
+            &[0x12, 0x34, 0xAB, 0xCD, 0x00, 0xFF],
+        );
+        assert_eq!(
+            processor.decode_png(&sixteen_rgb).unwrap().pixels(),
+            &[0x12, 0xAB, 0x00]
+        );
+        let sixteen_rgba = png(
+            1,
+            1,
+            png::BitDepth::Sixteen,
+            png::ColorType::Rgba,
+            &[0x12, 0x34, 0xAB, 0xCD, 0x00, 0xFF, 0x80, 0x00],
+        );
+        assert_eq!(
+            processor.decode_png(&sixteen_rgba).unwrap().pixels(),
+            &[0x12, 0xAB, 0x00]
+        );
+        let sixteen_gray = png(
             1,
             1,
             png::BitDepth::Sixteen,
             png::ColorType::Grayscale,
-            &[1, 2],
+            &[0x12, 0x34],
         );
-        assert!(matches!(
-            processor.decode_png(&sixteen).err().unwrap(),
-            Error::Frontend(FrontendError::ImageDecode(_))
-        ));
+        assert_eq!(
+            processor.decode_png(&sixteen_gray).unwrap().pixels(),
+            &[0x12, 0x12, 0x12]
+        );
     }
 }
