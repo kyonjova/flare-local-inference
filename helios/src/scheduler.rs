@@ -665,6 +665,7 @@ pub struct RequestScheduler {
     proposal_source: speculation::ProposalSource,
     decoded_history: Option<decoded_history::DecodedHistory>,
     forecasts: rounds::Forecasts,
+    acceptance_population: speculation::AcceptancePopulation,
     costs: cost::ActionCosts,
     refresh: refresh::RefreshState,
     tickets: HashMap<PrefixKey, Ticket>,
@@ -720,6 +721,7 @@ impl RequestScheduler {
             capabilities.page_tokens,
         )?;
         let forecasts = rounds::Forecasts::new(capabilities.completion_token_capacity);
+        let acceptance_population = speculation::AcceptancePopulation::new(capabilities.completion_token_capacity);
         Ok(Self {
             plan_owner: Arc::new(()),
             limits,
@@ -756,6 +758,7 @@ impl RequestScheduler {
             proposal_source: speculation::ProposalSource::Mtp,
             decoded_history: None,
             forecasts,
+            acceptance_population,
             costs: cost::ActionCosts::default(),
             refresh: refresh::RefreshState::default(),
             tickets: HashMap::new(),
@@ -1627,7 +1630,11 @@ impl RequestScheduler {
             window_snapshot_ready: false,
             window_restore: false,
             epoch: 0,
-            acceptance: speculation::AcceptanceProfile::new(self.capabilities.completion_token_capacity),
+            acceptance: if self.confidence_forecasts() {
+                speculation::AcceptanceProfile::new(self.capabilities.completion_token_capacity)
+            } else {
+                speculation::AcceptanceProfile::seeded(&self.acceptance_population)
+            },
             accounting: self.accounting(),
             handle,
             state_slot: StateSlotId((1 + slot * execution_rows) as u32),
@@ -2492,6 +2499,7 @@ impl RequestScheduler {
         let mut boundaries = Vec::new();
         let mut captures = Vec::new();
         let mut window_snapshots = Vec::new();
+        let mut population_observations = Vec::new();
         for (row, lane) in step.lanes.iter().enumerate() {
             let kind = step.lane_kind(row);
             let Ok(request) = self.request_mut(lane.request) else {
@@ -2542,13 +2550,14 @@ impl RequestScheduler {
             {
                 let vector = record.vector.as_ref().unwrap();
                 let offered = vector.offered_drafts as usize;
-                request.acceptance.observe(
+                request.acceptance.observe_shared(
                     proposal_source,
                     record.generated_tokens as u32,
                     offered,
                     vector.accepted_drafts as usize,
                     vector.emitted_count > vector.accepted_drafts,
                     survival.map(|rows| rows[lane.request.slot as usize].as_slice()),
+                    Some(&mut |depth, value| population_observations.push((depth, value))),
                 );
             }
             if record.status == 3 {
@@ -2631,6 +2640,9 @@ impl RequestScheduler {
             if request.pending == 0 {
                 request.scheduled_consumed = request.consumed_tokens;
             }
+        }
+        for (depth, value) in population_observations {
+            self.acceptance_population.observe(proposal_source, depth, value);
         }
         for lane in &step.lanes {
             let pending = self.pending_token_ceiling(lane.request) as u64;

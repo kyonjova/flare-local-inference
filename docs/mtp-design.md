@@ -386,7 +386,10 @@ capture.
 | Grammar advancement, stop sequences, output presentation | Rust with ordered token-vector completions |
 
 Rust adapts among prepared widths from request-local prefix survival and measured
-full-round costs. Every speculative graph is a complete proposal, verification,
+full-round costs. A request's survival estimates start from the acceptance of
+earlier requests' first rounds, as
+[completed confidence and acceptance](scheduling-runtime-design.md#completed-confidence-and-acceptance)
+specifies. Every speculative graph is a complete proposal, verification,
 and commit program. The controller learns from its emitted/offered/accepted
 records, or optional verification probabilities supplied by prepared graphs;
 graphs that declare `confidence_width` also return proposal-confidence

@@ -392,7 +392,11 @@ requires confirmed stream drain before `release_after_shutdown` releases
 resources associated with the attempted submission.
 
 Each request owns conditional draft-acceptance statistics by depth and proposal
-source. Validated speculative completions update only that request. The emitted
+source. Validated speculative completions update that request. A request's
+first eight observations at a depth also update the acceptance population from
+which later requests' statistics start; see
+[completed confidence and acceptance](../docs/scheduling-runtime-design.md#completed-confidence-and-acceptance).
+The emitted
 accepted prefix supplies positive observations. When a correction token was
 emitted and an offered draft remained, the next draft supplies a rejection.
 Termination within an accepted prefix censors the remaining depths. Expected

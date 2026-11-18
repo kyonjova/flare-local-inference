@@ -86,10 +86,47 @@ impl PrefixEstimate {
     }
 }
 
+/// Observations per draft depth that one request contributes to the acceptance
+/// population. The fixed prior carries the same weight, so the first request
+/// moves a population mean at most halfway.
+const POPULATION_REQUEST_SHARE: u8 = 8;
+/// Observation weight at which the population becomes a moving average. One
+/// request then holds at most `1 - (1 - 1/128)^8`, about 6%, of a mean.
+const POPULATION_WEIGHT_CAP: f64 = 128.0;
+
+/// Verified prefix survival by proposal source and draft depth across requests.
+/// Each request contributes its first observations at a depth, which describe
+/// the rounds a request's initial estimate governs.
+pub(super) struct AcceptancePopulation {
+    /// Mean and observation weight per source and depth.
+    prefixes: [Vec<(f64, f64)>; 2],
+}
+
+impl AcceptancePopulation {
+    pub fn new(token_capacity: usize) -> Self {
+        Self { prefixes: std::array::from_fn(|_| (0..token_capacity.saturating_sub(1))
+            .map(|i| (0.5f64.powi(i as i32 + 1), f64::from(POPULATION_REQUEST_SHARE))).collect()) }
+    }
+
+    #[cfg(test)]
+    pub fn mean(&self, source: ProposalSource, depth: usize) -> f64 {
+        self.prefixes[source as usize][depth].0
+    }
+
+    pub fn observe(&mut self, source: ProposalSource, depth: usize, value: f64) {
+        debug_assert!(value.is_finite() && (0.0..=1.0).contains(&value));
+        let (mean, weight) = &mut self.prefixes[source as usize][depth];
+        *weight = (*weight + 1.0).min(POPULATION_WEIGHT_CAP);
+        *mean += (value - *mean) / *weight;
+    }
+}
+
 /// Prefix survival of the complete proposal program, including copy overrides.
 #[derive(Clone)]
 pub struct AcceptanceProfile {
     prefixes: [Vec<PrefixEstimate>; 2],
+    /// Observations per source and depth already counted in the population.
+    shared: [Vec<u8>; 2],
     rounds: u64,
 }
 
@@ -101,8 +138,18 @@ impl Default for AcceptanceProfile {
 
 impl AcceptanceProfile {
     pub fn new(token_capacity: usize) -> Self {
-        Self { prefixes: std::array::from_fn(|_| (0..token_capacity.saturating_sub(1))
-            .map(|i| PrefixEstimate::new(0.5f64.powi(i as i32 + 1), 0)).collect()), rounds: 0 }
+        Self::seeded(&AcceptancePopulation::new(token_capacity))
+    }
+
+    /// A profile whose initial means are the population's, at the initial
+    /// weight of a `PrefixEstimate`.
+    pub(super) fn seeded(population: &AcceptancePopulation) -> Self {
+        Self {
+            prefixes: std::array::from_fn(|source| population.prefixes[source].iter()
+                .map(|&(mean, _)| PrefixEstimate::new(mean, 0)).collect()),
+            shared: std::array::from_fn(|source| vec![0; population.prefixes[source].len()]),
+            rounds: 0,
+        }
     }
 
     /// Depth zero is the first draft after the pending target token.
@@ -132,7 +179,7 @@ impl AcceptanceProfile {
         self.prefixes[source as usize][depth].weight_at(generated)
     }
 
-    /// Rejection falsifies every longer offered prefix; termination censors its suffix.
+    #[cfg(test)]
     pub(super) fn observe(
         &mut self,
         source: ProposalSource,
@@ -142,6 +189,22 @@ impl AcceptanceProfile {
         rejected: bool,
         survival: Option<&[f32]>,
     ) {
+        self.observe_shared(source, generated, offered, accepted, rejected, survival, None);
+    }
+
+    /// Rejection falsifies every longer offered prefix; termination censors its suffix.
+    /// `population` receives the depth and value of each observation within
+    /// this request's population share.
+    pub(super) fn observe_shared(
+        &mut self,
+        source: ProposalSource,
+        generated: u32,
+        offered: usize,
+        accepted: usize,
+        rejected: bool,
+        survival: Option<&[f32]>,
+        mut population: Option<&mut dyn FnMut(usize, f64)>,
+    ) {
         debug_assert!(accepted <= offered && offered <= self.prefixes[source as usize].len());
         if offered == 0 {
             return;
@@ -150,6 +213,11 @@ impl AcceptanceProfile {
         for depth in 0..observed {
             let value = survival.map_or(f64::from(depth < accepted), |p| f64::from(p[depth]));
             self.prefixes[source as usize][depth].observe(value, generated);
+            let shared = &mut self.shared[source as usize][depth];
+            if let Some(population) = population.as_mut().filter(|_| *shared < POPULATION_REQUEST_SHARE) {
+                *shared += 1;
+                population(depth, value);
+            }
         }
         self.rounds = self.rounds.saturating_add(1);
     }

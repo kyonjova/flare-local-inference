@@ -72,9 +72,16 @@ impl RequestScheduler {
             .map(|lane| submission.lane_advance_ceiling(lane)).sum::<usize>()).sum()
     }
 
+    /// Learned proposals of a catalog with device prefix allocation are priced
+    /// from confidence forecasts; every other catalog is priced from verified
+    /// acceptance.
+    pub(super) fn confidence_forecasts(&self) -> bool {
+        self.proposal_source == speculation::ProposalSource::Mtp
+            && self.capabilities.speculative_allocations.iter().any(|shape| shape.4 == crate::execution::PrefixAllocation::Gpu)
+    }
+
     pub(super) fn speculative_curve(&self, request: &LiveRequest, optimistic: bool) -> Vec<f64> {
-        if self.proposal_source == speculation::ProposalSource::Mtp
-            && self.capabilities.speculative_allocations.iter().any(|shape| shape.4 == crate::execution::PrefixAllocation::Gpu) {
+        if self.confidence_forecasts() {
             let forecast = self.forecasts.requests[request.handle.slot as usize].as_ref()
                 .filter(|forecast| forecast.request == request.handle)
                 .cloned().unwrap_or_else(|| Forecast::new(request.handle, &self.forecasts.population, request.generated_tokens));

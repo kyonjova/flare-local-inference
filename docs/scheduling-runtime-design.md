@@ -9,7 +9,7 @@ and selection), `utility.rs` (value arithmetic and cohort selection),
 `service.rs` (service prices), `cost.rs` (duration estimates), `refresh.rs`
 (timing-refresh and acceptance-learning credit), `learning.rs` (acceptance
 probes), `rounds.rs` (speculative round candidates and confidence forecasts),
-and `speculation.rs` (acceptance estimates).
+and `speculation.rs` (acceptance estimates and their population).
 [`scheduling-utility.md`](scheduling-utility.md) defines the utility and price
 flow. Python experiments are in `scripts/scheduling_sim/`; they do not run in
 Helios. The diagnostic `ignition debug-serve --direct` path has its own Python
@@ -91,6 +91,24 @@ weight two, cap at 128, and age with a half-life of 128 generated tokens.
 Unobserved suffixes retain their means. Ordinary selection uses the historical
 means; funded acceptance learning uses the bounded optimistic estimate
 `min(1, mean + sqrt(ln(20) / (2 * aged_weight)))`.
+
+A request's acceptance estimates start from an acceptance population that the
+scheduler keeps per proposal source and draft depth while the model is loaded.
+Each population mean begins at `0.5^d` with the weight of eight observations.
+A validated completion adds an acceptance observation, binary or from
+`completion_speculative_survival`, when it is among the reporting request's
+first eight at that depth. The first observations of a request describe the
+rounds that an initial estimate governs. A population mean averages its
+observations until its weight reaches 128 and then moves toward each
+observation with weight 1/128. One request therefore supplies at most half of a
+mean that held only the fixed start, and at most `1 - (127/128)^8`, about 6%,
+of a mean at the weight cap. Ordinary and funded-probe rounds contribute alike;
+width-one rounds offer no draft and contribute nothing, so requests admitted
+before a drafting round completes start from `0.5^d` exactly. A request's
+estimate takes the population mean at the initial weight of two, and two of
+its own observations at a depth weigh as much as that start. When the catalog
+declares device prefix allocation for learned proposals, selection reads
+confidence forecasts and acceptance estimates keep the fixed `0.5^d` start.
 
 A prepared program may also write `completion_speculative_survival`, cumulative
 products of `min(1, p(token)/q(token))` for evaluated prefixes. These replace
@@ -594,7 +612,11 @@ includes its maximum packed token extent in capture headroom.
 measured synthetic catalogs: one, two, and sixteen long prefills; fitting and
 padded tails; high- and low-acceptance speculation; heterogeneous cohorts;
 padded batch capacities; long decode pairs; prefill/decode contention; graph
-expiry and recovery; and output gaps. Mixed tests compare every legal cohort
+expiry and recovery; and output gaps.
+`helios/src/scheduler/acceptance_population_tests.rs` covers the acceptance
+population: the first drafting round of a request after high- and
+low-acceptance requests, the fixed start before any drafting round, and one
+request's bounded contribution. Mixed tests compare every legal cohort
 against exhaustive useful-work/time enumeration, exercise fitting prompt tails,
 ordinary and speculative decode rows, malformed completions, independent shape
 expiry, and concurrent prompt/decode workloads. Native input tests check packed
