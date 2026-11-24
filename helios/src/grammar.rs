@@ -155,7 +155,19 @@ impl GrammarCompiler {
             .map(|(name, &id)| (id, name.clone()))
             .collect();
         let tokenizer_vocab = bytes.len();
-        let trie = TokTrie::from(&TokRxInfo::new(tokenizer_vocab as u32, eos_ids[0]), &bytes)
+        // toktrie packs trie node depth (num_parents) in 10 bits (max 1024 bytes).
+        // Checkpoints such as ERNIE 5.5 include multi-kilobyte repeated-character tokens
+        // (e.g. 4096 spaces, 2048 dots) that exceed this trie depth. Omitting them from
+        // the grammar trie keeps constrained decoding sound (shorter tokens still spell
+        // the same bytes) without affecting unconstrained generation.
+        const MAX_TOKTRIE_TOKEN_BYTES: usize = 1024;
+        let mut trie_bytes = bytes;
+        for word in &mut trie_bytes {
+            if word.len() > MAX_TOKTRIE_TOKEN_BYTES {
+                word.clear();
+            }
+        }
+        let trie = TokTrie::from(&TokRxInfo::new(tokenizer_vocab as u32, eos_ids[0]), &trie_bytes)
             .with_eos_tokens(eos_ids);
         let mut tokenizer = tokenizer.clone();
         tokenizer.with_truncation(None).map_err(|error| {

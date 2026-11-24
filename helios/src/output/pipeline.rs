@@ -33,6 +33,7 @@ pub enum OutputPipeline {
     Recipient(super::recipient::RecipientOutput),
     Tml(super::tml::TmlOutput),
     MiniMaxXml(TaggedOutput<super::minimax_xml::MiniMaxXml>),
+    ErnieXml(TaggedOutput<super::ernie_xml::ErnieXml>),
     GemmaCall(TaggedOutput<super::gemma_call::GemmaCall>),
     Text(TaggedOutput<PlainText>),
 }
@@ -60,6 +61,7 @@ macro_rules! dispatch {
             OutputPipeline::Recipient($parser) => $body,
             OutputPipeline::Tml($parser) => $body,
             OutputPipeline::MiniMaxXml($parser) => $body,
+            OutputPipeline::ErnieXml($parser) => $body,
             OutputPipeline::GemmaCall($parser) => $body,
             OutputPipeline::Text($parser) => $body,
         }
@@ -99,6 +101,9 @@ impl OutputPipeline {
             Some((ToolParserKind::MiniMaxXml, _, _)) => Self::MiniMaxXml(
                 TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
             ),
+            Some((ToolParserKind::ErnieXml, _, _)) => Self::ErnieXml(
+                TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
+            ),
             Some((ToolParserKind::GemmaCall, _, _)) => Self::GemmaCall(
                 TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
             ),
@@ -118,6 +123,7 @@ impl OutputPipeline {
                 | ToolParserKind::QwenCoder
                 | ToolParserKind::GlmArgumentTags
                 | ToolParserKind::MiniMaxXml
+                | ToolParserKind::ErnieXml
                 | ToolParserKind::GemmaCall,
             )
             | None => true,
@@ -134,6 +140,7 @@ impl OutputPipeline {
             | ToolParserKind::GlmArgumentTags
             | ToolParserKind::Dsml
             | ToolParserKind::MiniMaxXml
+            | ToolParserKind::ErnieXml
             | ToolParserKind::GemmaCall => &[],
         }
     }
@@ -163,6 +170,7 @@ impl OutputPipeline {
                 ]
                 .concat(),
                 ToolParserKind::MiniMaxXml => dialect::<super::minimax_xml::MiniMaxXml>(),
+                ToolParserKind::ErnieXml => dialect::<super::ernie_xml::ErnieXml>(),
                 ToolParserKind::GemmaCall => dialect::<super::gemma_call::GemmaCall>(),
                 ToolParserKind::Dsml => super::dsml::CONTROL_MARKERS.to_vec(),
                 ToolParserKind::Xtml => Self::envelope_markers(ToolParserKind::Xtml).to_vec(),
@@ -225,6 +233,9 @@ impl OutputPipeline {
             Some((ToolParserKind::MiniMaxXml, _, _)) => {
                 TaggedOutput::<super::minimax_xml::MiniMaxXml>::grammar_envelope(&config.content)
             }
+            Some((ToolParserKind::ErnieXml, _, _)) => {
+                TaggedOutput::<super::ernie_xml::ErnieXml>::grammar_envelope(&config.content)
+            }
             Some((ToolParserKind::GemmaCall, _, _)) => {
                 TaggedOutput::<super::gemma_call::GemmaCall>::grammar_envelope(&config.content)
             }
@@ -243,6 +254,9 @@ impl OutputPipeline {
         if config.content.start == super::tagged::OutputStart::Reasoning {
             match config.syntax.reasoning.as_ref().map(|r| r.kind) {
                 Some(ReasoningParserKind::MmThink) => envelope.reasoning_end = Some("</mm:think>"),
+                Some(ReasoningParserKind::ErnieThink) => {
+                    envelope.reasoning_end = Some("</ernie:think>")
+                }
                 Some(ReasoningParserKind::ChannelThought) => {
                     envelope.reasoning_end = Some("<channel|>")
                 }
