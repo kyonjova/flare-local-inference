@@ -91,9 +91,10 @@ def graph_contracts(signatures, inputs, *, continuation, pending, cursor=None, r
 
 def frontend(*, tools, assistant_marker, message_end_markers, prefix_boundary, wrapping_newlines=0,
              tag_separator="", terminal_markers=(), image_preparation=None, image_layout=None,
-             position_dimensions=0, rejected_tokens=(), image_tokens=None):
+             position_dimensions=0, rejected_tokens=(), image_tokens=None,
+             reasoning=p.THINK_TAGS, reasoning_open="<think>", reasoning_close="</think>"):
     return dict(tools=dict(kind=tools, wrapping_newlines=wrapping_newlines, tag_separator=tag_separator),
-        reasoning=dict(kind=p.THINK_TAGS, open="<think>", close="</think>",
+        reasoning=dict(kind=reasoning, open=reasoning_open, close=reasoning_close,
                        wrapping_newlines=wrapping_newlines, terminal_markers=list(terminal_markers)),
         image_preparation=image_preparation, image_layout=image_layout, position_dimensions=position_dimensions,
         rejected_tokens=list(rejected_tokens), assistant_marker=assistant_marker,

@@ -63,8 +63,8 @@ contract_enum!(ValueSource {
 });
 contract_enum!(InputIndexing { Scalar = 1, SubmissionRow = 2, RequestRow = 3, PackedToken = 4, ActiveRow = 5 });
 contract_enum!(StateAccessKind { Read = 1, Write = 2, ReadWrite = 3 });
-contract_enum!(ToolParserKind { QwenCoder = 1, GlmArgumentTags = 2, Dsml = 3, Xtml = 4, MiniMaxXml = 5, GemmaCall = 6, Atem = 7, TmlJson = 8 });
-contract_enum!(ReasoningParserKind { ThinkTags = 1, XtmlThink = 2, MmThink = 3, ChannelThought = 4, RecipientHeaders = 5, ContentHeaders = 6 });
+contract_enum!(ToolParserKind { QwenCoder = 1, GlmArgumentTags = 2, Dsml = 3, Xtml = 4, MiniMaxXml = 5, GemmaCall = 6, Atem = 7, TmlJson = 8, InvokeParameterXml = 9 });
+contract_enum!(ReasoningParserKind { ThinkTags = 1, XtmlThink = 2, MmThink = 3, ChannelThought = 4, RecipientHeaders = 5, ContentHeaders = 6, ErnieThink = 7 });
 contract_enum!(ImagePreparationKind { Qwen = 1, Mimo = 2, Deepseek = 3, Moonvit = 4, Step = 5, Radio = 6, DeepseekRowMajor = 7, Glm = 8, PatchMerge = 9, PaddedGrid = 10 });
 contract_enum!(ImageLayoutKind { Qwen = 1, Mimo = 2, Deepseek = 3, Moonvit = 4, Step = 5, Radio = 6, DeepseekRowMajor = 7, Glm = 8, Bracketed = 9, ClassToken = 10 });
 contract_enum!(GraphOperation { Init = 1, Restore = 2, Snapshot = 3, Prefill = 4, Decode = 5, Resume = 6, Vision = 7, Speculative = 8, Mixed = 9, ScoredPrefill = 12, TerminalPrefill = 14 });
@@ -662,10 +662,12 @@ impl FrontendContract {
                 ReasoningParserKind::ChannelThought => ("<|channel>thought", "<channel|>"),
                 ReasoningParserKind::RecipientHeaders => ("<|start|>assistant to=self<|message|>", "<|eom|>"),
                 ReasoningParserKind::ContentHeaders => ("<|content_thinking|>", "<|end_message|>"),
+                ReasoningParserKind::ErnieThink => ("<ernie:think>", "</ernie:think>"),
             };
             let tool_open = self.tools.as_ref().and_then(|tool| match tool.kind {
                 ToolParserKind::QwenCoder | ToolParserKind::GlmArgumentTags => Some("<tool_call>"),
                 ToolParserKind::GemmaCall => Some("<|tool_call>"),
+                ToolParserKind::InvokeParameterXml => Some("<ernie:tool_call>"),
                 _ => None,
             });
             if reasoning.open != open
@@ -781,9 +783,23 @@ mod tests {
     #[test]
     fn recipient_syntax_requires_matching_typed_parsers_and_known_identifiers() {
         assert_eq!(ToolParserKind::try_from(7).unwrap(), ToolParserKind::Atem);
+        assert_eq!(ToolParserKind::try_from(9).unwrap(), ToolParserKind::InvokeParameterXml);
         assert_eq!(ReasoningParserKind::try_from(5).unwrap(), ReasoningParserKind::RecipientHeaders);
-        for value in [0, 9, 999] { assert!(ToolParserKind::try_from(value).is_err()); }
-        for value in [0, 7, 999] { assert!(ReasoningParserKind::try_from(value).is_err()); }
+        assert_eq!(ReasoningParserKind::try_from(7).unwrap(), ReasoningParserKind::ErnieThink);
+        for value in [0, 10, 999] { assert!(ToolParserKind::try_from(value).is_err()); }
+        for value in [0, 8, 999] { assert!(ReasoningParserKind::try_from(value).is_err()); }
+        let mut syntax = crate::model::testing::metadata().frontend;
+        syntax.tools = Some(ToolParser {kind: ToolParserKind::InvokeParameterXml, wrapping_newlines: 0, tag_separator: String::new()});
+        syntax.reasoning = Some(ReasoningParser {
+            kind: ReasoningParserKind::ErnieThink,
+            open: "<ernie:think>".into(),
+            close: "</ernie:think>".into(),
+            wrapping_newlines: 0,
+            terminal_markers: vec!["<ernie:tool_call>".into()],
+        });
+        assert!(syntax.validate().is_ok());
+        syntax.reasoning.as_mut().unwrap().open = "<think>".into();
+        assert!(syntax.validate().is_err());
         let mut syntax = crate::model::testing::metadata().frontend;
         syntax.tools = Some(ToolParser {kind: ToolParserKind::Atem, wrapping_newlines: 0, tag_separator: String::new()});
         assert!(syntax.validate().is_err());

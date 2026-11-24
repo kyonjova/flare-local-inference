@@ -11,6 +11,8 @@ mod argument_tags;
 #[cfg(feature = "server")]
 mod gemma_call;
 #[cfg(feature = "server")]
+mod invoke_parameter_xml;
+#[cfg(feature = "server")]
 mod minimax_xml;
 #[cfg(feature = "server")]
 pub mod chatml;

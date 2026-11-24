@@ -34,6 +34,7 @@ pub enum OutputPipeline {
     Tml(super::tml::TmlOutput),
     MiniMaxXml(TaggedOutput<super::minimax_xml::MiniMaxXml>),
     GemmaCall(TaggedOutput<super::gemma_call::GemmaCall>),
+    InvokeParameterXml(TaggedOutput<super::invoke_parameter_xml::InvokeParameterXml>),
     Text(TaggedOutput<PlainText>),
 }
 
@@ -61,6 +62,7 @@ macro_rules! dispatch {
             OutputPipeline::Tml($parser) => $body,
             OutputPipeline::MiniMaxXml($parser) => $body,
             OutputPipeline::GemmaCall($parser) => $body,
+            OutputPipeline::InvokeParameterXml($parser) => $body,
             OutputPipeline::Text($parser) => $body,
         }
     };
@@ -102,6 +104,9 @@ impl OutputPipeline {
             Some((ToolParserKind::GemmaCall, _, _)) => Self::GemmaCall(
                 TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
             ),
+            Some((ToolParserKind::InvokeParameterXml, _, _)) => Self::InvokeParameterXml(
+                TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
+            ),
             None => Self::Text(
                 TaggedOutput::new(config.content).with_reasoning(reasoning, &config.control_tokens),
             ),
@@ -118,7 +123,8 @@ impl OutputPipeline {
                 | ToolParserKind::QwenCoder
                 | ToolParserKind::GlmArgumentTags
                 | ToolParserKind::MiniMaxXml
-                | ToolParserKind::GemmaCall,
+                | ToolParserKind::GemmaCall
+                | ToolParserKind::InvokeParameterXml,
             )
             | None => true,
         }
@@ -134,7 +140,8 @@ impl OutputPipeline {
             | ToolParserKind::GlmArgumentTags
             | ToolParserKind::Dsml
             | ToolParserKind::MiniMaxXml
-            | ToolParserKind::GemmaCall => &[],
+            | ToolParserKind::GemmaCall
+            | ToolParserKind::InvokeParameterXml => &[],
         }
     }
 
@@ -164,6 +171,11 @@ impl OutputPipeline {
                 .concat(),
                 ToolParserKind::MiniMaxXml => dialect::<super::minimax_xml::MiniMaxXml>(),
                 ToolParserKind::GemmaCall => dialect::<super::gemma_call::GemmaCall>(),
+                ToolParserKind::InvokeParameterXml => [
+                    dialect::<super::invoke_parameter_xml::InvokeParameterXml>(),
+                    super::invoke_parameter_xml::PARAMETER_MARKERS.to_vec(),
+                ]
+                .concat(),
                 ToolParserKind::Dsml => super::dsml::CONTROL_MARKERS.to_vec(),
                 ToolParserKind::Xtml => Self::envelope_markers(ToolParserKind::Xtml).to_vec(),
                 ToolParserKind::Atem => Self::envelope_markers(ToolParserKind::Atem).to_vec(),
@@ -228,6 +240,11 @@ impl OutputPipeline {
             Some((ToolParserKind::GemmaCall, _, _)) => {
                 TaggedOutput::<super::gemma_call::GemmaCall>::grammar_envelope(&config.content)
             }
+            Some((ToolParserKind::InvokeParameterXml, _, _)) => {
+                TaggedOutput::<super::invoke_parameter_xml::InvokeParameterXml>::grammar_envelope(
+                    &config.content,
+                )
+            }
             None => Some(crate::grammar::OutputEnvelope {
                 recipient: None,
                 reasoning_end: (config.content.start == super::tagged::OutputStart::Reasoning)
@@ -245,6 +262,9 @@ impl OutputPipeline {
                 Some(ReasoningParserKind::MmThink) => envelope.reasoning_end = Some("</mm:think>"),
                 Some(ReasoningParserKind::ChannelThought) => {
                     envelope.reasoning_end = Some("<channel|>")
+                }
+                Some(ReasoningParserKind::ErnieThink) => {
+                    envelope.reasoning_end = Some("</ernie:think>")
                 }
                 _ => {}
             }
@@ -1363,5 +1383,145 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn ernie_think_and_invoke_parameter_xml_stream_and_gate_tokens() {
+        use crate::output::tagged::OutputStart;
+        let mut syntax = crate::model::testing::metadata().frontend;
+        syntax.tools = Some(ToolParser {
+            kind: ToolParserKind::InvokeParameterXml,
+            wrapping_newlines: 0,
+            tag_separator: String::new(),
+        });
+        syntax.reasoning = Some(ReasoningParser {
+            kind: ReasoningParserKind::ErnieThink,
+            open: "<ernie:think>".into(),
+            close: "</ernie:think>".into(),
+            wrapping_newlines: 0,
+            terminal_markers: vec!["<ernie:tool_call>".into()],
+        });
+        assert!(OutputPipeline::gates_reasoning_tokens(&syntax));
+        let declared = OutputPipeline::declared_markers(&syntax);
+        for marker in [
+            "<ernie:think>",
+            "</ernie:think>",
+            "<ernie:tool_call>",
+            "</ernie:tool_call>",
+            "<invoke name=",
+            "</invoke>",
+            "<parameter name=",
+            "</parameter>",
+        ] {
+            assert!(declared.contains(&marker), "missing {marker} in {declared:?}");
+        }
+        let tools = vec![
+            json!({"function":{"name":"get_weather","parameters":{"type":"object","properties":{"city":{"type":"string"},"days":{"type":"integer"}}}}}),
+            json!({"function":{"name":"get_time","parameters":{"type":"object","properties":{"tz":{"type":"string"}}}}}),
+        ];
+        let text = "café 世界</ernie:think>Checking.\n<ernie:tool_call>\n<invoke name=\"get_weather\"><parameter name=\"city\">Paris</parameter><parameter name=\"days\">3</parameter></invoke>\n<invoke name=\"get_time\"><parameter name=\"tz\">CET</parameter></invoke>\n</ernie:tool_call>";
+        for split in text.char_indices().map(|(at, _)| at) {
+            let mut parser = OutputPipeline::new(OutputConfig {
+                syntax: syntax.clone(),
+                control_tokens: vec![],
+                content: TaggedConfig {
+                    start: OutputStart::Reasoning,
+                    structured: false,
+                    tools: tools.clone(),
+                },
+            });
+            let mut output = Accumulator::new("ernie".into());
+            for part in [&text[..split], &text[split..]] {
+                output
+                    .apply(parser.push(Input::Text(part)).unwrap())
+                    .unwrap();
+            }
+            output
+                .apply(parser.finish(Termination::Eos).unwrap())
+                .unwrap();
+            output.finish().unwrap();
+            let result = output.message();
+            assert_eq!(result["reasoning_content"], "café 世界", "split {split}");
+            assert_eq!(result["content"], "Checking.\n", "split {split}");
+            assert_eq!(result["tool_calls"][0]["function"]["name"], "get_weather");
+            assert_eq!(
+                serde_json::from_str::<serde_json::Value>(
+                    result["tool_calls"][0]["function"]["arguments"]
+                        .as_str()
+                        .unwrap()
+                )
+                .unwrap(),
+                json!({"city": "Paris", "days": 3})
+            );
+            assert_eq!(result["tool_calls"][1]["function"]["name"], "get_time");
+            assert_eq!(
+                result["tool_calls"][1]["function"]["arguments"],
+                "{\"tz\":\"CET\"}"
+            );
+        }
+        // Tool call directly terminates reasoning when closing think tag is omitted.
+        let implicit = "Need tool.<ernie:tool_call>\n<invoke name=\"get_time\"><parameter name=\"tz\">UTC</parameter></invoke>\n</ernie:tool_call>";
+        for split in implicit.char_indices().map(|(at, _)| at) {
+            let mut parser = OutputPipeline::new(OutputConfig {
+                syntax: syntax.clone(),
+                control_tokens: vec![],
+                content: TaggedConfig {
+                    start: OutputStart::Reasoning,
+                    structured: false,
+                    tools: tools.clone(),
+                },
+            });
+            let mut output = Accumulator::new("ernie-implicit".into());
+            for part in [&implicit[..split], &implicit[split..]] {
+                output
+                    .apply(parser.push(Input::Text(part)).unwrap())
+                    .unwrap();
+            }
+            output
+                .apply(parser.finish(Termination::Eos).unwrap())
+                .unwrap();
+            output.finish().unwrap();
+            let result = output.message();
+            assert_eq!(result["reasoning_content"], "Need tool.", "split {split}");
+            assert_eq!(result["tool_calls"][0]["function"]["name"], "get_time");
+        }
+        // Single-token gating keeps spelled </ernie:think> inside reasoning and content.
+        for feed in 0..3 {
+            let message = delimited(
+                &syntax,
+                OutputStart::Reasoning,
+                &tools,
+                &[
+                    (false, "Quote </ernie:think> here."),
+                    (true, "</ernie:think>"),
+                    (false, "Write </ernie:think> in content."),
+                ],
+                feed,
+            );
+            assert_eq!(
+                message["reasoning_content"], "Quote </ernie:think> here.",
+                "feed {feed}"
+            );
+            assert_eq!(
+                message["content"], "Write </ernie:think> in content.",
+                "feed {feed}"
+            );
+        }
+        let envelope = OutputPipeline::grammar_envelope(&OutputConfig {
+            syntax,
+            control_tokens: vec![],
+            content: TaggedConfig {
+                start: OutputStart::Reasoning,
+                structured: true,
+                tools,
+            },
+        })
+        .unwrap();
+        assert_eq!(envelope.reasoning_end, Some("</ernie:think>"));
+        assert_eq!(
+            envelope.tool,
+            Some(("<ernie:tool_call>", "</ernie:tool_call>"))
+        );
+        assert!(envelope.tool_ends_reasoning);
     }
 }

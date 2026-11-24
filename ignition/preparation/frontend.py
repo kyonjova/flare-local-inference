@@ -18,6 +18,11 @@ class PromptEncoder(IntEnum):
     TML_V0 = 3
 
 
+class TemplateEncoding(IntEnum):
+    TEMPLATE_TEXT = 0
+    TEMPLATE_TOKEN_SEGMENTS = 1
+
+
 TOKEN_FIELDS = ("bos_token", "eos_token", "unk_token", "sep_token", "pad_token", "cls_token", "mask_token")
 
 
@@ -221,10 +226,15 @@ def _native_image_placeholder(snapshot, model, encoder):
 
 
 def prepare_frontend(snapshot, *, eos_token_ids, image_profile=None, preprocessor=None,
-                     prompt_encoder=PromptEncoder.PROMPT_JINJA, qwen_model_type="qwen4_exp"):
+                     prompt_encoder=PromptEncoder.PROMPT_JINJA,
+                     template_encoding=TemplateEncoding.TEMPLATE_TEXT, qwen_model_type="qwen4_exp"):
     """Resolve checkpoint structure during preparation; sampling is recipe-owned."""
     if not isinstance(prompt_encoder, PromptEncoder):
         raise ValueError("prompt_encoder must be a PromptEncoder")
+    if not isinstance(template_encoding, TemplateEncoding):
+        raise ValueError("template_encoding must be a TemplateEncoding")
+    if template_encoding != TemplateEncoding.TEMPLATE_TEXT and prompt_encoder != PromptEncoder.PROMPT_JINJA:
+        raise ValueError("segmented template encoding requires PROMPT_JINJA")
     snapshot = Path(snapshot)
     if type(eos_token_ids) is int:
         eos_token_ids = [eos_token_ids]
@@ -236,6 +246,8 @@ def prepare_frontend(snapshot, *, eos_token_ids, image_profile=None, preprocesso
               "eos_token_ids": eos_token_ids}
     if prompt_encoder != PromptEncoder.PROMPT_JINJA:
         result["prompt_encoder"] = int(prompt_encoder)
+    if template_encoding != TemplateEncoding.TEMPLATE_TEXT:
+        result["template_encoding"] = int(template_encoding)
     if image_profile is not None:
         expected_profile = {PromptEncoder.DEEPSEEK_V4: "deepseek4",
                             PromptEncoder.DEEPSEEK_V41: "deepseek_row_major"}.get(prompt_encoder)

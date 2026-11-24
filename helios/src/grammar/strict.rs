@@ -2948,6 +2948,7 @@ mod tests {
             ToolParserKind::MiniMaxXml,
             ToolParserKind::GemmaCall,
             ToolParserKind::Atem,
+            ToolParserKind::InvokeParameterXml,
         ] {
             let plan = ToolGrammarPlan {
                 tools: vec![StrictToolSpec {

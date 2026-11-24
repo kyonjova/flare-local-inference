@@ -1023,6 +1023,18 @@ mod tests {
             .unwrap(),
             ReasoningParserKind::ChannelThought
         );
+        assert_eq!(
+            ToolParserKind::try_from(wire::ToolParser::decode(&[0x08, 9][..]).unwrap().kind)
+                .unwrap(),
+            ToolParserKind::InvokeParameterXml
+        );
+        assert_eq!(
+            ReasoningParserKind::try_from(
+                wire::ReasoningParser::decode(&[0x08, 7][..]).unwrap().kind
+            )
+            .unwrap(),
+            ReasoningParserKind::ErnieThink
+        );
         assert!(ToolParserKind::try_from(wire::ToolParser::decode(&[][..]).unwrap().kind).is_err());
         let syntax: FrontendContract = serde_json::from_value(
             serde_json::to_value(wire::FrontendContract {

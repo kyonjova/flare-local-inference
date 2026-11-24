@@ -512,6 +512,14 @@ pub(super) fn template_inputs<'a>(
             serde_json::json!({"type":"function", "function":function})
         }).collect()));
     }
+    if frontend.prompt_encoder() == crate::frontend::PromptEncoder::Jinja
+        && !options.contains_key("parallel_tool_calls")
+    {
+        options.insert(
+            "parallel_tool_calls".into(),
+            Value::Bool(request.parallel_tool_calls),
+        );
+    }
     if !options.contains_key("add_generation_prompt")
         && requests_continuation(options.get("continue_final_message"))
     {
@@ -1061,6 +1069,70 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[test]
+    fn jinja_template_inputs_forwards_parallel_tool_calls_without_overwriting_override() {
+        use crate::frontend::{Asset, FrontendAssets};
+        use crate::server::inference::{Input, Options, Request};
+        use sha2::{Digest, Sha256};
+
+        let root = std::env::temp_dir().join(format!(
+            "helios-parallel-tool-calls-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let tokenizer = crate::grammar::tests::byte_tokenizer();
+        let write_asset = |name: &str, bytes: &[u8]| {
+            let path = root.join(name);
+            std::fs::write(&path, bytes).unwrap();
+            Asset {
+                range: None,
+                path,
+                sha256: format!("{:x}", Sha256::digest(bytes)),
+            }
+        };
+        let tok_bytes = tokenizer.to_string(false).unwrap();
+        let jinja_frontend = Frontend::load(
+            FrontendAssets {
+                tokenizer: write_asset("tokenizer.json", tok_bytes.as_bytes()),
+                tokens: Default::default(),
+                chat_template: Some(write_asset("chat_template.jinja", b"{% mark %}ok")),
+            },
+            Default::default(),
+        )
+        .unwrap();
+        std::fs::remove_dir_all(&root).unwrap();
+
+        let make_request = |parallel_tool_calls: bool, override_value: Option<bool>| {
+            let mut template = Map::new();
+            if let Some(value) = override_value {
+                template.insert("parallel_tool_calls".into(), Value::Bool(value));
+            }
+            Request {
+                input: Input::Conversation(Vec::new()),
+                checkpoint_hints: Vec::new(),
+                options: Options {
+                    template,
+                    ..Options::default()
+                },
+                tools: Vec::new(),
+                tool_choice: ToolChoice::Auto,
+                parallel_tool_calls,
+                choices: 1,
+            }
+        };
+
+        let (_, _, opts_false) = template_inputs(&jinja_frontend, &make_request(false, None), 0).unwrap();
+        assert_eq!(opts_false.get("parallel_tool_calls"), Some(&Value::Bool(false)));
+
+        let (_, _, opts_true) = template_inputs(&jinja_frontend, &make_request(true, None), 0).unwrap();
+        assert_eq!(opts_true.get("parallel_tool_calls"), Some(&Value::Bool(true)));
+
+        let (_, _, opts_override) =
+            template_inputs(&jinja_frontend, &make_request(false, Some(true)), 0).unwrap();
+        assert_eq!(opts_override.get("parallel_tool_calls"), Some(&Value::Bool(true)));
     }
 }
 
